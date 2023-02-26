@@ -155,18 +155,24 @@ def _load_data(basedir, factor=None, width=None, height=None, load_imgs=True):
     disp = np.stack(disp, -1)
 
     mask_dir = os.path.join(basedir, "motion_masks")
-    maskfiles = [
-        os.path.join(mask_dir, f)
-        for f in sorted(os.listdir(mask_dir))
-        if f.endswith("png")
-    ]
+    masks = []
+    for mask_sub_dir in os.listdir(mask_dir):
+        maskfiles = [
+            os.path.join(mask_dir, f)
+            for f in sorted(os.listdir(mask_sub_dir))
+            if f.endswith("png")
+        ]
 
-    masks = [
-        cv2.resize(imread(f) / 255.0, (sh[1], sh[0]), interpolation=cv2.INTER_NEAREST)
-        for f in maskfiles
-    ]
-    masks = np.stack(masks, -1)
-    masks = np.float32(masks > 1e-3)
+        submasks = [
+            cv2.resize(
+                imread(f) / 255.0, (sh[1], sh[0]), interpolation=cv2.INTER_NEAREST
+            )
+            for f in maskfiles
+        ]
+        submasks = np.stack(submasks, -1)
+        submasks = np.float32(submasks > 1e-3)
+        masks.append(submasks)
+    masks = np.concatenate(masks, axis=0)
 
     flow_dir = os.path.join(basedir, "flow")
     flows_f = []
@@ -214,12 +220,12 @@ def _load_data(basedir, factor=None, width=None, height=None, load_imgs=True):
     print(flow_masks_f.shape)
 
     assert imgs.shape[0] == disp.shape[0]
-    assert imgs.shape[0] == masks.shape[0]
+    assert imgs.shape[0] == masks.shape[1]
     assert imgs.shape[0] == flows_f.shape[0]
     assert imgs.shape[0] == flow_masks_f.shape[0]
 
     assert imgs.shape[1] == disp.shape[1]
-    assert imgs.shape[1] == masks.shape[1]
+    assert imgs.shape[1] == masks.shape[2]
 
     return poses, bds, imgs, disp, masks, flows_f, flow_masks_f, flows_b, flow_masks_b
 
@@ -384,7 +390,8 @@ def load_llff_data(
     images = np.moveaxis(imgs, -1, 0).astype(np.float32)
     bds = np.moveaxis(bds, -1, 0).astype(np.float32)
     disp = np.moveaxis(disp, -1, 0).astype(np.float32)
-    masks = np.moveaxis(masks, -1, 0).astype(np.float32)
+    masks = np.moveaxis(masks, -1, 1).astype(np.float32)
+    masks = np.moveaxis(masks, 1, 0).astype(np.float32)
     flows_f = np.moveaxis(flows_f, -1, 0).astype(np.float32)
     flow_masks_f = np.moveaxis(flow_masks_f, -1, 0).astype(np.float32)
     flows_b = np.moveaxis(flows_b, -1, 0).astype(np.float32)
