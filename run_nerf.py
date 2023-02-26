@@ -69,6 +69,8 @@ def train():
     H, W, focal = hwf
 
     # Create nerf model
+    # TODO create multiple nerfs for multiple dynamic objects
+    num_objects = len(masks[0]) - 1 or 1
     render_kwargs_train, render_kwargs_test, start, grad_vars, optimizer = create_nerf(
         args
     )
@@ -199,7 +201,10 @@ def train():
         render_kwargs_train.update({"pretrain": False})
 
         # Fix the StaticNeRF and only train the DynamicNeRF
-        grad_vars_d = list(render_kwargs_train["network_fn_d"].parameters())
+        # TODO add all dynamic networks
+        grad_vars_d = list()
+        for network_d in render_kwargs_train["network_fn_d"]:
+            grad_vars_d += list(network_d.paramters())
         optimizer = torch.optim.Adam(
             params=grad_vars_d, lr=args.lrate, betas=(0.9, 0.999)
         )
@@ -223,7 +228,7 @@ def train():
             torch.cuda.empty_cache()
 
         # No raybatching as we need to take random rays from one image at a time
-        img_i = np.random.choice(i_train)
+        img_i = np.random.choice(i_train, num_objects + 1)
         ret, select_coords, batch_mask = run_nerf_batch(
             img_i,
             poses,
@@ -264,12 +269,6 @@ def train():
         loss_dict = loss_RGB(ret["rgb_map_d_b"], target_rgb, loss_dict, "_d_b")
         loss += args.dynamic_loss_lambda * loss_dict["img_d_b_loss"]
 
-        loss_dict = motion_loss(ret, loss_dict, poses, img_i, batch_grid, hwf)
-        if "flow_f_loss" in loss_dict:
-            loss += args.flow_loss_lambda * Temp * loss_dict["flow_f_loss"]
-        if "flow_b_loss" in loss_dict:
-            loss += args.flow_loss_lambda * Temp * loss_dict["flow_b_loss"]
-
         loss_dict = slow_scene_flow(ret, loss_dict)
         loss += args.slow_loss_lambda * loss_dict["slow_loss"]
 
@@ -290,6 +289,13 @@ def train():
         # Depth in NDC space equals to negative disparity in Euclidean space.
         loss_dict["depth_loss"] = depth_loss(ret["depth_map_d"], -batch_invdepth)
         loss += args.depth_loss_lambda * Temp * loss_dict["depth_loss"]
+
+        # TODO fix motion loss for arbitrary dynamic object poses
+        loss_dict = motion_loss(ret, loss_dict, poses, img_i, batch_grid, hwf)
+        if "flow_f_loss" in loss_dict:
+            loss += args.flow_loss_lambda * Temp * loss_dict["flow_f_loss"]
+        if "flow_b_loss" in loss_dict:
+            loss += args.flow_loss_lambda * Temp * loss_dict["flow_b_loss"]
 
         if chain_5frames:
             loss_dict = loss_RGB(ret["rgb_map_d_b_b"], target_rgb, loss_dict, "_d_b_b")
