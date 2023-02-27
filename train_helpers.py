@@ -63,7 +63,10 @@ def run_nerf_batch(
         )  # (H, W, 3), (H, W, 3)
         cameras_rays_o.append(rays_o)
         cameras_rays_d.append(rays_d)
-        cameras_masks.append(masks[img_idx, obj_idx])
+        if obj_idx:
+            cameras_masks.append(1.0 - masks[img_idx, obj_idx])
+        else:
+            cameras_masks.append(masks[img_idx, obj_idx])
 
     cameras_rays_o = torch.cat(cameras_rays_o, dim=0)
     cameras_rays_d = torch.cat(cameras_rays_d, dim=0)
@@ -75,9 +78,9 @@ def run_nerf_batch(
     # Select coords based on collective dynamic mask
     collective_mask = cameras_masks[0]
     coords_d = []
-    for camera_mask in cameras_masks:
-        coords_d.append(torch.stack((torch.where(camera_mask < 0.5)), -1))
-        collective_mask[camera_mask < 0.5] = 0
+    for camera_mask in cameras_masks[1:]:
+        coords_d.append(torch.stack((torch.where(camera_mask > 0.5)), -1))
+        collective_mask[camera_mask >= 0.5] = 0
         breakpoint()
     coords_s = torch.stack((torch.where(collective_mask >= 0.5)), -1)
 

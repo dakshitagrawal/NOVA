@@ -39,11 +39,24 @@ def mse2psnr(x):
     return -10.0 * torch.log(x) / torch.log(torch.Tensor([10.0]))
 
 
-def loss_RGB(pred_rgb, target_rgb, loss_dict, key, mask=None):
+def loss_RGB_full(pred_rgb, target_rgb, loss_dict, key, mask=None):
     img_loss = img2mse(pred_rgb, target_rgb, mask)
     psnr = mse2psnr(img_loss)
     loss_dict[f"psnr{key}"] = psnr
     loss_dict[f"img{key}_loss"] = img_loss
+    return loss_dict
+
+
+def loss_RGB(pred_rgb, target_rgb, loss_dict, key, mask=None, start_idx=0):
+    loss_dict[f"img{key}_loss"] = []
+    for obj_idx in range(len(pred_rgb)):
+        img_loss = img2mse(pred_rgb[obj_idx], target_rgb[obj_idx], mask[obj_idx])
+        psnr = mse2psnr(img_loss)
+        loss_dict[f"psnr{key}/{obj_idx+start_idx:02d}"] = psnr
+        loss_dict[f"img{key}_loss/{obj_idx+start_idx:02d}"] = img_loss
+        loss_dict[f"img{key}_loss"].append(img_loss)
+
+    loss_dict[f"img{key}_loss"] = torch.sum(loss_dict[f"img{key}_loss"])
     return loss_dict
 
 
@@ -55,81 +68,129 @@ def consistency_loss(ret, loss_dict):
 
 
 def mask_loss(loss_dict, key, blending, dynamicness, mask):
-    loss_dict[f"mask{key}_loss"] = L1(blending[mask[:, 0].type(torch.bool)]) + img2mae(
-        dynamicness[..., None], 1 - mask
+    for obj_idx in range(len(mask)):
+        obj_blending = blending[obj_idx]
+        obj_mask = mask[obj_idx]
+        obj_dynamicness = dynamicness[obj_idx]
+
+        loss_dict[f"mask{key}_loss/{obj_idx:02d}"] = L1(
+            obj_blending[obj_mask[:, 0].type(torch.bool)]
+        ) + img2mae(obj_dynamicness[..., None], 1 - obj_mask)
+
+    loss_dict[f"mask{key}_loss"] = sum(
+        [loss_dict[f"mask{key}_loss/{i:02d}"] for i in range(len(mask))]
     )
     return loss_dict
 
 
 def sparsity_loss(ret, loss_dict):
-    loss_dict["sparse_loss"] = entropy(ret["weights_d"]) + entropy(ret["blending"])
+    loss_dict["sparse_loss"] = entropy(ret["weights_obj"]) + entropy(ret["blending"])
     return loss_dict
 
 
 def slow_scene_flow(ret, loss_dict):
     # Slow scene flow. The forward and backward sceneflow should be small.
-    loss_dict["slow_loss"] = L1(ret["sceneflow_b"]) + L1(ret["sceneflow_f"])
+    loss_dict["slow_loss"] = []
+    for i in range(len(ret["sceneflow_b"])):
+        loss_dict[f"slow_loss/{i+1:02d}"] = L1(ret["sceneflow_b"][i]) + L1(
+            ret["sceneflow_f"][i]
+        )
+        loss_dict["slow_loss"].append(loss_dict[f"slow_loss/{i+i:02d}"])
+
+    loss_dict["slow_loss"] = torch.sum(loss_dict["slow_loss"])
     return loss_dict
 
 
 def order_loss(ret, loss_dict, mask):
-    loss_dict["order_loss"] = torch.mean(
-        torch.square(
-            ret["depth_map_d"][mask[:, 0].type(torch.bool)]
-            - ret["depth_map_s"].detach()[mask[:, 0].type(torch.bool)]
+    loss_dict["order_loss"] = []
+    for i in range(1, len(ret["depth_map_obj"])):
+        loss_dict["order_loss"].append(
+            torch.mean(
+                torch.square(
+                    (ret["depth_map_obj"] - ret["depth_map_s"].detach())[
+                        mask[i].type(torch.bool)
+                    ]
+                )
+            )
         )
-    )
+
+    loss_dict["order_loss"] = torch.sum(loss_dict["order_loss"])
     return loss_dict
 
 
-def motion_loss(ret, loss_dict, poses, img_i, batch_grid, hwf):
+def motion_loss(ret, loss_dict, poses, img_i_list, batch_grid, hwf):
     H, W, focal = tuple(hwf)
     num_img = len(poses)
 
     # Compuate EPE between induced flow and true flow (forward flow).
     # The last frame does not have forward flow.
-    if img_i < num_img - 1:
-        pts_f = ret["raw_pts_f"]
-        weight = ret["weights_d"]
-        pose_f = poses[img_i + 1, :3, :4]
-        induced_flow_f = induce_flow(
-            H, W, focal, pose_f, weight, pts_f, batch_grid[..., :2]
-        )
-        flow_f_loss = img2mae(induced_flow_f, batch_grid[:, 2:4], batch_grid[:, 4:5])
-        loss_dict["flow_f_loss"] = flow_f_loss
+    for idx, img_i in enumerate(img_i_list[1:]):
+        if img_i < num_img - 1:
+            obj_grid = batch_grid[idx + 1]
+            pts_f = ret["raw_pts_f"][idx]
+            weight = ret["weights_obj"][idx + 1]
+            pose_f = poses[img_i + 1, :3, :4]
+            induced_flow_f = induce_flow(
+                H, W, focal, pose_f, weight, pts_f, obj_grid[..., :2]
+            )
+            flow_f_loss = img2mae(induced_flow_f, obj_grid[:, 2:4], obj_grid[:, 4:5])
+            if "flow_f_loss" not in loss_dict:
+                loss_dict["flow_f_loss"] = flow_f_loss
+            else:
+                loss_dict["flow_f_loss"] += flow_f_loss
 
     # Compuate EPE between induced flow and true flow (backward flow).
     # The first frame does not have backward flow.
-    if img_i > 0:
-        pts_b = ret["raw_pts_b"]
-        weight = ret["weights_d"]
-        pose_b = poses[img_i - 1, :3, :4]
-        induced_flow_b = induce_flow(
-            H, W, focal, pose_b, weight, pts_b, batch_grid[..., :2]
-        )
-        flow_b_loss = img2mae(induced_flow_b, batch_grid[:, 5:7], batch_grid[:, 7:8])
-        loss_dict["flow_b_loss"] = flow_b_loss
+    for idx, img_i in enumerate(img_i_list[1:]):
+        if img_i > 0:
+            obj_grid = batch_grid[idx + 1]
+            pts_b = ret["raw_pts_b"][idx]
+            weight = ret["weights_obj"][idx + 1]
+            pose_b = poses[img_i - 1, :3, :4]
+            induced_flow_b = induce_flow(
+                H, W, focal, pose_b, weight, pts_b, obj_grid[..., :2]
+            )
+            flow_b_loss = img2mae(induced_flow_b, obj_grid[:, 5:7], obj_grid[:, 7:8])
+            if "flow_b_loss" not in loss_dict:
+                loss_dict["flow_b_loss"] = flow_b_loss
+            else:
+                loss_dict["flow_b_loss"] += flow_b_loss
 
     return loss_dict
 
 
-def smooth_scene_flow(ret, loss_dict, hwf):
+def smooth_scene_flow(ret, loss_dict, hwf, mask):
     # Smooth scene flow. The summation of the forward and backward sceneflow should be small.
     H, W, focal = tuple(hwf)
-    loss_dict["smooth_loss"] = compute_sf_smooth_loss(
-        ret["raw_pts"], ret["raw_pts_f"], ret["raw_pts_b"], H, W, focal
-    )
-    loss_dict["sf_smooth_loss"] = compute_sf_smooth_loss(
-        ret["raw_pts_b"], ret["raw_pts"], ret["raw_pts_b_b"], H, W, focal
-    ) + compute_sf_smooth_loss(
-        ret["raw_pts_f"], ret["raw_pts_f_f"], ret["raw_pts"], H, W, focal
-    )
+    num_dobj = len(ret["raw_pts"])
+    loss_dict["smooth_loss"] = []
+    loss_dict["sf_smooth_loss"] = []
+    loss_dict["sp_smooth_loss"] = []
+    for i in range(num_dobj):
+        obj_mask = mask[i].astype(bool)
+        obj_pts = ret["raw_pts"][i, obj_mask]
+        obj_pts_f = ret["raw_pts_f"][i, obj_mask]
+        obj_pts_b = ret["raw_pts_b"][i, obj_mask]
+        obj_pts_b_b = ret["raw_pts_b_b"][i, obj_mask]
+        obj_pts_f_f = ret["raw_pts_f_f"][i, obj_mask]
 
-    # Spatial smooth scene flow. (loss adapted from NSFF)
-    loss_dict["sp_smooth_loss"] = compute_sf_smooth_s_loss(
-        ret["raw_pts"], ret["raw_pts_f"], H, W, focal
-    ) + compute_sf_smooth_s_loss(ret["raw_pts"], ret["raw_pts_b"], H, W, focal)
+        loss_dict["smooth_loss"].append(
+            compute_sf_smooth_loss(obj_pts, obj_pts_f, obj_pts_b, H, W, focal)
+        )
+        loss_dict["sf_smooth_loss"].append(
+            compute_sf_smooth_loss(obj_pts_b, obj_pts, obj_pts_b_b, H, W, focal)
+            + compute_sf_smooth_loss(obj_pts_f, obj_pts_f_f, obj_pts, H, W, focal)
+        )
 
+        # Spatial smooth scene flow. (loss adapted from NSFF)
+        loss_dict["sp_smooth_loss"].append(
+            compute_sf_smooth_s_loss(obj_pts, obj_pts_f, H, W, focal)
+            + compute_sf_smooth_s_loss(obj_pts, obj_pts_b, H, W, focal)
+        )
+
+    loss_dict["smooth_loss"] = torch.sum(loss_dict["smooth_loss"])
+    loss_dict["sf_smooth_loss"] = torch.sum(loss_dict["sf_smooth_loss"])
+    loss_dict["sp_smooth_loss"] = torch.sum(loss_dict["sp_smooth_loss"])
     return loss_dict
 
 
@@ -166,12 +227,15 @@ def compute_sf_smooth_loss(pts, pts_f, pts_b, H, W, f):
 
 
 def depth_loss(dyn_depth, gt_depth):
-    t_d = torch.median(dyn_depth)
-    s_d = torch.mean(torch.abs(dyn_depth - t_d))
-    dyn_depth_norm = (dyn_depth - t_d) / s_d
+    loss = None
+    for i in range(len(dyn_depth)):
+        t_d = torch.median(dyn_depth[i])
+        s_d = torch.mean(torch.abs(dyn_depth[i] - t_d))
+        dyn_depth_norm = (dyn_depth[i] - t_d) / s_d
 
-    t_gt = torch.median(gt_depth)
-    s_gt = torch.mean(torch.abs(gt_depth - t_gt))
-    gt_depth_norm = (gt_depth - t_gt) / s_gt
+        t_gt = torch.median(gt_depth[i])
+        s_gt = torch.mean(torch.abs(gt_depth[i] - t_gt))
+        gt_depth_norm = (gt_depth[i] - t_gt) / s_gt
+        loss += torch.mean((dyn_depth_norm - gt_depth_norm) ** 2)
 
-    return torch.mean((dyn_depth_norm - gt_depth_norm) ** 2)
+    return loss

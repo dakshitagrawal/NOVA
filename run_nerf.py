@@ -12,6 +12,7 @@ from losses import (
     consistency_loss,
     depth_loss,
     img2mse,
+    loss_RGB_full,
     loss_RGB,
     mask_loss,
     motion_loss,
@@ -25,7 +26,13 @@ from render_samples import render_fix, render_novel_view_and_time
 from render_utils import render
 from run_nerf_helpers import create_nerf, to8b
 from tboard_helpers import write_dynamic_imgs, write_static_imgs
-from train_helpers import decay_lr, run_nerf_batch, save_ckpt, select_batch
+from train_helpers import (
+    decay_lr,
+    run_nerf_batch,
+    save_ckpt,
+    select_batch,
+    select_batch_multiple,
+)
 from utils.flow_utils import flow_to_image
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -201,7 +208,6 @@ def train():
         render_kwargs_train.update({"pretrain": False})
 
         # Fix the StaticNeRF and only train the DynamicNeRF
-        # TODO add all dynamic networks
         grad_vars_d = list()
         for network_d in render_kwargs_train["network_fn_d"]:
             grad_vars_d += list(network_d.paramters())
@@ -228,7 +234,7 @@ def train():
             torch.cuda.empty_cache()
 
         # No raybatching as we need to take random rays from one image at a time
-        img_i = np.random.choice(i_train, num_objects + 1)
+        img_i = np.ones([num_objects + 1]) * np.random.choice(i_train)
         ret, select_coords, batch_mask = run_nerf_batch(
             img_i,
             poses,
@@ -241,9 +247,10 @@ def train():
             static=True,
             dynamic=True,
         )
-        target_rgb = select_batch(images[img_i], select_coords)
-        batch_grid = select_batch(grids[img_i], select_coords)  # (N_rand, 8)
-        batch_invdepth = select_batch(invdepths[img_i], select_coords)
+        target_rgb = select_batch_multiple(images[img_i], select_coords)
+        target_rgb_full = select_batch(images[img_i[0]], select_coords)
+        batch_grid = select_batch_multiple(grids[img_i], select_coords)  # (N_rand, 8)
+        batch_invdepth = select_batch_multiple(invdepths[img_i], select_coords)
 
         optimizer.zero_grad()
         loss = 0
@@ -255,19 +262,43 @@ def train():
             )
             loss += args.mask_loss_lambda * loss_dict["mask_loss"]
 
-        loss_dict = loss_RGB(ret["rgb_map_full"], target_rgb, loss_dict, "")
-        loss += args.full_loss_lambda * loss_dict["img_loss"]
+        loss_dict = loss_RGB_full(
+            ret["rgb_map_full"], target_rgb_full, loss_dict, "_full"
+        )
+        loss += args.full_loss_lambda * loss_dict["img_full_loss"]
 
-        loss_dict = loss_RGB(ret["rgb_map_s"], target_rgb, loss_dict, "_s", batch_mask)
-        loss += args.static_loss_lambda * loss_dict["img_s_loss"]
+        loss_dict = loss_RGB(
+            ret["rgb_map_obj"], target_rgb, loss_dict, "_obj", batch_mask
+        )
+        loss += args.dynamic_loss_lambda * loss_dict["img_obj_loss"]
 
-        loss_dict = loss_RGB(ret["rgb_map_d"], target_rgb, loss_dict, "_d")
-        loss += args.dynamic_loss_lambda * loss_dict["img_d_loss"]
+        loss_dict = loss_RGB(
+            ret["rgb_map_d_f"], target_rgb, loss_dict, "_d_f", batch_mask[1:], 1
+        )
+        loss += args.dynamic_loss_lambda * loss_dict["img_d_f_loss"]
 
-        loss_dict = loss_RGB(ret["rgb_map_d_f"], target_rgb, loss_dict, "_d_f")
-
-        loss_dict = loss_RGB(ret["rgb_map_d_b"], target_rgb, loss_dict, "_d_b")
+        loss_dict = loss_RGB(
+            ret["rgb_map_d_b"], target_rgb, loss_dict, "_d_b", batch_mask[1:], 1
+        )
         loss += args.dynamic_loss_lambda * loss_dict["img_d_b_loss"]
+
+        if chain_5frames:
+            loss_dict = loss_RGB(
+                ret["rgb_map_d_b_b"], target_rgb, loss_dict, "_d_b_b", batch_mask[1:]
+            )
+            loss += args.dynamic_loss_lambda * loss_dict["img_d_b_b_loss"]
+
+            loss_dict = loss_RGB(
+                ret["rgb_map_d_f_f"], target_rgb, loss_dict, "_d_f_f", batch_mask[1:]
+            )
+            loss += args.dynamic_loss_lambda * loss_dict["img_d_f_f_loss"]
+
+        loss_dict = order_loss(ret, loss_dict, batch_mask)
+        loss += args.order_loss_lambda * loss_dict["order_loss"]
+
+        # Depth in NDC space equals to negative disparity in Euclidean space.
+        loss_dict["depth_loss"] = depth_loss(ret["depth_map_obj"], -batch_invdepth)
+        loss += args.depth_loss_lambda * Temp * loss_dict["depth_loss"]
 
         loss_dict = slow_scene_flow(ret, loss_dict)
         loss += args.slow_loss_lambda * loss_dict["slow_loss"]
@@ -283,26 +314,11 @@ def train():
         loss_dict = sparsity_loss(ret, loss_dict)
         loss += args.sparse_loss_lambda * loss_dict["sparse_loss"]
 
-        loss_dict = order_loss(ret, loss_dict, batch_mask)
-        loss += args.order_loss_lambda * loss_dict["order_loss"]
-
-        # Depth in NDC space equals to negative disparity in Euclidean space.
-        loss_dict["depth_loss"] = depth_loss(ret["depth_map_d"], -batch_invdepth)
-        loss += args.depth_loss_lambda * Temp * loss_dict["depth_loss"]
-
-        # TODO fix motion loss for arbitrary dynamic object poses
         loss_dict = motion_loss(ret, loss_dict, poses, img_i, batch_grid, hwf)
         if "flow_f_loss" in loss_dict:
             loss += args.flow_loss_lambda * Temp * loss_dict["flow_f_loss"]
         if "flow_b_loss" in loss_dict:
             loss += args.flow_loss_lambda * Temp * loss_dict["flow_b_loss"]
-
-        if chain_5frames:
-            loss_dict = loss_RGB(ret["rgb_map_d_b_b"], target_rgb, loss_dict, "_d_b_b")
-            loss += args.dynamic_loss_lambda * loss_dict["img_d_b_b_loss"]
-
-            loss_dict = loss_RGB(ret["rgb_map_d_f_f"], target_rgb, loss_dict, "_d_f_f")
-            loss += args.dynamic_loss_lambda * loss_dict["img_d_f_f_loss"]
 
         loss.backward()
         optimizer.step()
