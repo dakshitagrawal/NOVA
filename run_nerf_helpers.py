@@ -282,7 +282,7 @@ def create_nerf(args, num_objects):
     grad_vars = list(model_s.parameters())
 
     model_d_list = []
-    for _ in num_objects:
+    for _ in range(num_objects):
         model_d = NeRF_d(
             D=args.netdepth,
             W=args.netwidth,

@@ -50,13 +50,15 @@ def loss_RGB_full(pred_rgb, target_rgb, loss_dict, key, mask=None):
 def loss_RGB(pred_rgb, target_rgb, loss_dict, key, mask=None, start_idx=0):
     loss_dict[f"img{key}_loss"] = []
     for obj_idx in range(len(pred_rgb)):
-        img_loss = img2mse(pred_rgb[obj_idx], target_rgb[obj_idx], mask[obj_idx])
+        img_loss = img2mse(
+            pred_rgb[obj_idx], target_rgb[obj_idx], mask[obj_idx][:, None]
+        )
         psnr = mse2psnr(img_loss)
         loss_dict[f"psnr{key}/{obj_idx+start_idx:02d}"] = psnr
         loss_dict[f"img{key}_loss/{obj_idx+start_idx:02d}"] = img_loss
         loss_dict[f"img{key}_loss"].append(img_loss)
 
-    loss_dict[f"img{key}_loss"] = torch.sum(loss_dict[f"img{key}_loss"])
+    loss_dict[f"img{key}_loss"] = torch.sum(torch.stack(loss_dict[f"img{key}_loss"]))
     return loss_dict
 
 
@@ -74,11 +76,11 @@ def mask_loss(loss_dict, key, blending, dynamicness, mask):
         obj_dynamicness = dynamicness[obj_idx]
 
         loss_dict[f"mask{key}_loss/{obj_idx:02d}"] = L1(
-            obj_blending[obj_mask[:, 0].type(torch.bool)]
+            obj_blending[obj_mask.type(torch.bool)]
         ) + img2mae(obj_dynamicness[..., None], 1 - obj_mask)
 
-    loss_dict[f"mask{key}_loss"] = sum(
-        [loss_dict[f"mask{key}_loss/{i:02d}"] for i in range(len(mask))]
+    loss_dict[f"mask{key}_loss"] = torch.sum(
+        torch.stack([loss_dict[f"mask{key}_loss/{i:02d}"] for i in range(len(mask))])
     )
     return loss_dict
 
@@ -90,31 +92,19 @@ def sparsity_loss(ret, loss_dict):
 
 def slow_scene_flow(ret, loss_dict):
     # Slow scene flow. The forward and backward sceneflow should be small.
-    loss_dict["slow_loss"] = []
-    for i in range(len(ret["sceneflow_b"])):
-        loss_dict[f"slow_loss/{i+1:02d}"] = L1(ret["sceneflow_b"][i]) + L1(
-            ret["sceneflow_f"][i]
-        )
-        loss_dict["slow_loss"].append(loss_dict[f"slow_loss/{i+i:02d}"])
-
-    loss_dict["slow_loss"] = torch.sum(loss_dict["slow_loss"])
+    loss_dict[f"slow_loss"] = L1(ret["sceneflow_b"]) + L1(ret["sceneflow_f"])
     return loss_dict
 
 
 def order_loss(ret, loss_dict, mask):
-    loss_dict["order_loss"] = []
-    for i in range(1, len(ret["depth_map_obj"])):
-        loss_dict["order_loss"].append(
-            torch.mean(
-                torch.square(
-                    (ret["depth_map_obj"] - ret["depth_map_s"].detach())[
-                        mask[i].type(torch.bool)
-                    ]
-                )
-            )
+    loss_dict["order_loss"] = torch.mean(
+        torch.square(
+            (ret["depth_map_obj"][1:] - ret["depth_map_obj"][0:1].detach())[
+                mask[1:].type(torch.bool)
+            ]
         )
+    )
 
-    loss_dict["order_loss"] = torch.sum(loss_dict["order_loss"])
     return loss_dict
 
 
@@ -167,7 +157,7 @@ def smooth_scene_flow(ret, loss_dict, hwf, mask):
     loss_dict["sf_smooth_loss"] = []
     loss_dict["sp_smooth_loss"] = []
     for i in range(num_dobj):
-        obj_mask = mask[i].astype(bool)
+        obj_mask = mask[i] > 0
         obj_pts = ret["raw_pts"][i, obj_mask]
         obj_pts_f = ret["raw_pts_f"][i, obj_mask]
         obj_pts_b = ret["raw_pts_b"][i, obj_mask]
@@ -188,9 +178,9 @@ def smooth_scene_flow(ret, loss_dict, hwf, mask):
             + compute_sf_smooth_s_loss(obj_pts, obj_pts_b, H, W, focal)
         )
 
-    loss_dict["smooth_loss"] = torch.sum(loss_dict["smooth_loss"])
-    loss_dict["sf_smooth_loss"] = torch.sum(loss_dict["sf_smooth_loss"])
-    loss_dict["sp_smooth_loss"] = torch.sum(loss_dict["sp_smooth_loss"])
+    loss_dict["smooth_loss"] = torch.sum(torch.stack(loss_dict["smooth_loss"]))
+    loss_dict["sf_smooth_loss"] = torch.sum(torch.stack(loss_dict["sf_smooth_loss"]))
+    loss_dict["sp_smooth_loss"] = torch.sum(torch.stack(loss_dict["sp_smooth_loss"]))
     return loss_dict
 
 
@@ -236,6 +226,10 @@ def depth_loss(dyn_depth, gt_depth):
         t_gt = torch.median(gt_depth[i])
         s_gt = torch.mean(torch.abs(gt_depth[i] - t_gt))
         gt_depth_norm = (gt_depth[i] - t_gt) / s_gt
-        loss += torch.mean((dyn_depth_norm - gt_depth_norm) ** 2)
+
+        if loss is None:
+            loss = torch.mean((dyn_depth_norm - gt_depth_norm) ** 2)
+        else:
+            loss += torch.mean((dyn_depth_norm - gt_depth_norm) ** 2)
 
     return loss

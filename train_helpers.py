@@ -57,23 +57,20 @@ def run_nerf_batch(
 
     for obj_idx, img_idx in enumerate(ids):
         time_ids.append(img_idx / num_img * 2.0 - 1.0)  # time of the current frame
-        pose = poses[img_idx, :3, :4]
+        pose = poses[int(img_idx), :3, :4]
         rays_o, rays_d = get_rays(
             H, W, focal, torch.Tensor(pose)
         )  # (H, W, 3), (H, W, 3)
         cameras_rays_o.append(rays_o)
         cameras_rays_d.append(rays_d)
-        if obj_idx:
-            cameras_masks.append(1.0 - masks[img_idx, obj_idx])
-        else:
-            cameras_masks.append(masks[img_idx, obj_idx])
+        cameras_masks.append(masks[int(img_idx), obj_idx])
 
-    cameras_rays_o = torch.cat(cameras_rays_o, dim=0)
-    cameras_rays_d = torch.cat(cameras_rays_d, dim=0)
-    cameras_masks = torch.cat(cameras_masks, dim=0)
-    assert cameras_rays_o.shape == torch.Tensor([len(ids), H, W, 3])
-    assert cameras_rays_d.shape == torch.Tensor([len(ids), H, W, 3])
-    assert cameras_masks.shape == torch.Tensor([len(ids), H, W])
+    cameras_rays_o = torch.stack(cameras_rays_o, dim=0)
+    cameras_rays_d = torch.stack(cameras_rays_d, dim=0)
+    cameras_masks = torch.stack(cameras_masks, dim=0)
+    assert cameras_rays_o.shape == torch.Size([len(ids), H, W, 3])
+    assert cameras_rays_d.shape == torch.Size([len(ids), H, W, 3])
+    assert cameras_masks.shape == torch.Size([len(ids), H, W])
 
     # Select coords based on collective dynamic mask
     collective_mask = cameras_masks[0]
@@ -81,7 +78,6 @@ def run_nerf_batch(
     for camera_mask in cameras_masks[1:]:
         coords_d.append(torch.stack((torch.where(camera_mask > 0.5)), -1))
         collective_mask[camera_mask >= 0.5] = 0
-        breakpoint()
     coords_s = torch.stack((torch.where(collective_mask >= 0.5)), -1)
 
     select_coords = []
@@ -105,7 +101,7 @@ def run_nerf_batch(
         select_coords.append(coords_s[select_inds_s])
 
     select_coords = torch.cat(select_coords, 0)
-    assert select_coords.shape == torch.Tensor([N_rand, 2])
+    assert select_coords.shape == torch.Size([N_rand, 2])
 
     rays_o = select_batch_multiple(
         cameras_rays_o, select_coords
@@ -115,10 +111,10 @@ def run_nerf_batch(
     )  # (N_cameras, N_rand, 3)
     batch_rays = torch.stack([rays_o, rays_d], 0)
     batch_mask = select_batch_multiple(cameras_masks, select_coords)
-    assert rays_o.shape == torch.Tensor([len(ids), N_rand, 3])
-    assert rays_d.shape == torch.Tensor([len(ids), N_rand, 3])
-    assert batch_rays.shape == torch.Tensor([2, len(ids), N_rand, 3])
-    assert batch_mask.shape == torch.Tensor([len(ids), N_rand])
+    assert rays_o.shape == torch.Size([len(ids), N_rand, 3])
+    assert rays_d.shape == torch.Size([len(ids), N_rand, 3])
+    assert batch_rays.shape == torch.Size([2, len(ids), N_rand, 3])
+    assert batch_mask.shape == torch.Size([len(ids), N_rand])
 
     #####  Core optimization loop  #####
     ret = render(

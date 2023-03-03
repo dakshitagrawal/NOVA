@@ -12,8 +12,8 @@ from losses import (
     consistency_loss,
     depth_loss,
     img2mse,
-    loss_RGB_full,
     loss_RGB,
+    loss_RGB_full,
     mask_loss,
     motion_loss,
     mse2psnr,
@@ -79,7 +79,7 @@ def train():
     # TODO create multiple nerfs for multiple dynamic objects
     num_objects = len(masks[0]) - 1 or 1
     render_kwargs_train, render_kwargs_test, start, grad_vars, optimizer = create_nerf(
-        args
+        args, num_objects
     )
     render_kwargs_train.update(bds_dict)
     render_kwargs_test.update(bds_dict)
@@ -90,7 +90,8 @@ def train():
     # Move training data to GPU
     images = torch.Tensor(images)
     invdepths = torch.Tensor(invdepths)
-    masks = 1.0 - torch.Tensor(masks)
+    masks[:, 0] = 1.0 - masks[:, 0]
+    masks = torch.Tensor(masks)
     poses = torch.Tensor(poses)
     grids = torch.Tensor(grids)
 
@@ -118,7 +119,7 @@ def train():
                 time0 = time.time()
 
                 # No raybatching as we need to take random rays from one image at a time
-                img_i = np.random.choice(i_train)
+                img_i = np.ones([1]) * np.random.choice(i_train)
                 t = img_i / num_img * 2.0 - 1.0  # time of the current frame
                 ret, select_coords, batch_mask = run_nerf_batch(
                     img_i,
@@ -132,11 +133,14 @@ def train():
                     static=True,
                     dynamic=False,
                 )
-                target_rgb = select_batch(images[img_i], select_coords)
+                img_i = img_i.astype(int)
+                target_rgb = select_batch(images[img_i[0]], select_coords)
 
                 optimizer.zero_grad()
-                loss_dict = loss_RGB(ret["rgb_map_s"], target_rgb, {}, "_s")
-                loss = args.static_loss_lambda * loss_dict["img_s_loss"]
+                loss_dict = loss_RGB_full(
+                    ret["rgb_map_full"], target_rgb, {}, "_pretrain"
+                )
+                loss = args.static_loss_lambda * loss_dict["img_pretrain_loss"]
                 loss.backward()
                 optimizer.step()
                 new_lrate = decay_lr(args, i, optimizer)
@@ -148,7 +152,9 @@ def train():
                         f"Pretraining step: {i}, Loss: {loss}, Time: {dt}, expname: {expname}"
                     )
                     writer.add_scalar("pretrain_loss", loss.item(), i)
-                    writer.add_scalar("pretrain_psnr_s", loss_dict["psnr_s"].item(), i)
+                    writer.add_scalar(
+                        "pretrain_psnr_s", loss_dict["psnr_pretrain"].item(), i
+                    )
                     writer.add_scalar("pretrain_lr", new_lrate, i)
 
                 if i % args.i_img == 0:
@@ -162,11 +168,17 @@ def train():
                             focal,
                             chunk=1024 * 16,
                             c2w=pose,
+                            pretrain=True,
                             **render_kwargs_test,
                         )
-                    write_static_imgs(
-                        writer, i, ret, images[img_i], masks[img_i], "pretrain_"
-                    )
+                        write_static_imgs(
+                            writer,
+                            i,
+                            ret,
+                            images[img_i][0],
+                            masks[img_i][0][0],
+                            "pretrain_",
+                        )
 
                 if i % args.i_testset == 0 and i > 0:
                     fix_values = [
@@ -247,6 +259,7 @@ def train():
             static=True,
             dynamic=True,
         )
+        img_i = img_i.astype(int)
         target_rgb = select_batch_multiple(images[img_i], select_coords)
         target_rgb_full = select_batch(images[img_i[0]], select_coords)
         batch_grid = select_batch_multiple(grids[img_i], select_coords)  # (N_rand, 8)
@@ -256,11 +269,11 @@ def train():
         loss = 0
         loss_dict = {}
 
-        if i < decay_iteration * 1000:
-            loss_dict = mask_loss(
-                loss_dict, "", ret["blending"], ret["dynamicness_map"], batch_mask
-            )
-            loss += args.mask_loss_lambda * loss_dict["mask_loss"]
+        # if i < decay_iteration * 1000:
+        loss_dict = mask_loss(
+            loss_dict, "", ret["blending"], ret["dynamicness_map_obj"], batch_mask
+        )
+        loss += args.mask_loss_lambda * loss_dict["mask_loss"]
 
         loss_dict = loss_RGB_full(
             ret["rgb_map_full"], target_rgb_full, loss_dict, "_full"
@@ -303,7 +316,7 @@ def train():
         loss_dict = slow_scene_flow(ret, loss_dict)
         loss += args.slow_loss_lambda * loss_dict["slow_loss"]
 
-        loss_dict = smooth_scene_flow(ret, loss_dict, hwf)
+        loss_dict = smooth_scene_flow(ret, loss_dict, hwf, batch_mask)
         loss += args.smooth_loss_lambda * loss_dict["smooth_loss"]
         loss += args.smooth_loss_lambda * loss_dict["sp_smooth_loss"]
         loss += args.smooth_loss_lambda * loss_dict["sf_smooth_loss"]
@@ -393,9 +406,9 @@ def train():
                 to8b(ret["rgb_map_full"].cpu().numpy()),
             )
 
-            pose_f = poses[min(img_i + 1, int(num_img) - 1), :3, :4]
-            pose_b = poses[max(img_i - 1, 0), :3, :4]
-            write_static_imgs(writer, i, ret, target, mask)
+            pose_f = poses[np.clip(img_i + 1, 0, int(num_img) - 1), :3, :4]
+            pose_b = poses[np.clip(img_i - 1, 0, int(num_img) - 1), :3, :4]
+            write_static_imgs(writer, i, ret, target[0], mask[0][0])
             write_dynamic_imgs(writer, i, ret, grid, invdepth, pose_f, pose_b, hwf)
 
 

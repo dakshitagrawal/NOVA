@@ -27,13 +27,15 @@ def get_rgb_weights_after_flow(
     raw_values = []
     for dy_idx, dynamic_nerf_model in enumerate(network_fn_d):
         raw_values.append(
-            network_query_fn_d(flow_points[dy_idx + 1], viewdirs, dynamic_nerf_model)
+            network_query_fn_d(
+                flow_points[dy_idx + 1], viewdirs[dy_idx + 1], dynamic_nerf_model
+            )
         )
-    raw_values = torch.cat(raw_values, dim=0)
+    raw_values = torch.stack(raw_values, dim=0)
     raw_rgba = raw_values[..., :4]
     sceneflow_b = raw_values[..., 4:7]
     sceneflow_f = raw_values[..., 7:10]
-    rgb_map_d, weights_d = raw2outputs_d(raw_rgba[1:], z_vals, rays_d, raw_noise_std)
+    rgb_map_d, weights_d, _, _ = raw2outputs_d(raw_rgba, z_vals, rays_d, raw_noise_std)
     ret[f"rgb_map_d{key}"] = rgb_map_d
     if key == "_b" or key == "_f":
         ret[f"acc_map_d{key}"] = torch.abs(torch.sum(weights_d - weights_ref, -1))
@@ -52,7 +54,10 @@ def batchify_rays(t, chain_5frames, rays_flat, chunk=1024 * 16, **kwargs):
                 all_ret[k] = []
             all_ret[k].append(ret[k])
 
-    all_ret = {k: torch.cat(all_ret[k], 0) for k in all_ret}
+    all_ret = {
+        k: torch.cat(all_ret[k], 0) if "full" in k else torch.cat(all_ret[k], 1)
+        for k in all_ret
+    }
     return all_ret
 
 
@@ -146,112 +151,19 @@ def render(
         rays = torch.cat([rays, viewdirs], -1)
 
     assert len(t) == len(rays)
-    assert rays.shape == torch.Tensor([*sh[:-1], 8])
+    # assert rays.shape == torch.Size([*sh[:-1], 11 if use_viewdirs else 8])
 
     # Render and reshape
     all_ret = batchify_rays(t, chain_5frames, rays, chunk, **kwargs)
     for k in all_ret:
-        k_sh = list(sh[:-1]) + list(all_ret[k].shape[1:])
+        if "full" in k:
+            k_sh = list(sh[1:-1]) + list(all_ret[k].shape[1:])
+        else:
+            k_sh = list([-1]) + list(sh[1:-1]) + list(all_ret[k].shape[2:])
+
         all_ret[k] = torch.reshape(all_ret[k], k_sh)
 
     return all_ret
-
-
-def render_path_batch(
-    render_poses,
-    time2render,
-    hwf,
-    chunk,
-    render_kwargs,
-    savedir=None,
-    focal2render=None,
-):
-    """Render frames using batch.
-
-    Args:
-      render_poses: array of shape [num_frame, 3, 4]. Camera-to-world transformation matrix of each frame.
-      time2render: array of shape [num_frame]. Time of each frame.
-      hwf: list. [Height of image in pixels, Width of image in pixels, Focal length of pinhole camera]
-      chunk: int. Maximum number of rays to process simultaneously. Used to
-        control maximum memory usage. Does not affect final results.
-      render_kwargs: dictionary. args for the render function.
-      savedir: string. Directory to save results.
-      focal2render: list. Only used to perform dolly-zoom.
-    Returns:
-      ret_dict: dictionary. Final and intermediate results.
-    """
-    H, W, focal = hwf
-
-    ret_dict = {}
-    rgbs = []
-    rgbs_d = []
-    rgbs_s = []
-    dynamicnesses = []
-
-    time_curr = time.time()
-    for i, c2w in enumerate(render_poses):
-
-        print(i, time.time() - time_curr)
-        time_curr = time.time()
-
-        t = time2render[i]
-
-        if focal2render is not None:
-            # Render full image using different focal length
-            rays_o, rays_d = get_rays(H, W, focal2render[i], c2w)
-        else:
-            rays_o, rays_d = get_rays(H, W, focal, c2w)
-        rays_o = torch.reshape(rays_o, (-1, 3))
-        rays_d = torch.reshape(rays_d, (-1, 3))
-        batch_rays = torch.stack([rays_o, rays_d], 0)
-        rgb = []
-        rgb_d = []
-        rgb_s = []
-        dynamicness = []
-        for j in range(0, batch_rays.shape[1], chunk):
-            # print(j, '/', batch_rays.shape[1])
-            ret = render(
-                t,
-                False,
-                H,
-                W,
-                focal,
-                chunk=chunk,
-                rays=batch_rays[:, j : j + chunk, :],
-                **render_kwargs,
-            )
-            rgb.append(ret["rgb_map_full"].cpu())
-            rgb_d.append(ret["rgb_map_d"].cpu())
-            rgb_s.append(ret["rgb_map_s"].cpu())
-            dynamicness.append(ret["dynamicness_map"].cpu())
-        rgb = torch.reshape(torch.cat(rgb, 0), (H, W, 3)).numpy()
-        rgb_d = torch.reshape(torch.cat(rgb_d, 0), (H, W, 3)).numpy()
-        rgb_s = torch.reshape(torch.cat(rgb_s, 0), (H, W, 3)).numpy()
-        dynamicness = torch.reshape(torch.cat(dynamicness, 0), (H, W)).numpy()
-
-        # Not a good solution. Should take care of this when preparing the data.
-        if W % 2 == 1:
-            # rgb = cv2.resize(rgb, (W - 1, H))
-            rgb = rgb[:, :-1, :]
-            rgb_d = rgb_d[:, :-1, :]
-            rgb_s = rgb_s[:, :-1, :]
-            dynamicness = dynamicness[:, :-1]
-        rgbs.append(rgb)
-        rgbs_d.append(rgb_d)
-        rgbs_s.append(rgb_s)
-        dynamicnesses.append(dynamicness)
-
-        if savedir is not None:
-            rgb8 = to8b(rgbs[-1])
-            filename = os.path.join(savedir, "{:03d}.png".format(i))
-            imageio.imwrite(filename, rgb8)
-
-    ret_dict["rgbs"] = np.stack(rgbs, 0)
-    ret_dict["rgbs_d"] = np.stack(rgbs_d, 0)
-    ret_dict["rgbs_s"] = np.stack(rgbs_s, 0)
-    ret_dict["dynamicnesses"] = np.stack(dynamicnesses, 0)
-
-    return ret_dict
 
 
 def render_path(
@@ -282,12 +194,10 @@ def render_path(
     H, W, focal = hwf
 
     ret_dict = {}
-    rgbs = []
-    rgbs_d = []
-    rgbs_s = []
-    depths = []
-    depths_d = []
-    depths_s = []
+    rgbs_full = []
+    rgbs_obj = []
+    depths_full = []
+    depths_obj = []
     flows_f = []
     flows_b = []
     dynamicness = []
@@ -305,7 +215,7 @@ def render_path(
     time_curr = time.time()
     for i, c2w in enumerate(render_poses):
         t = time2render[i]
-        pose = c2w[:3, :4]
+        pose = c2w[:, :3, :4]
         print(i, time.time() - time_curr)
         time_curr = time.time()
 
@@ -328,82 +238,89 @@ def render_path(
                 **render_kwargs,
             )
 
-        rgbs.append(ret["rgb_map_full"].cpu().numpy())
-        rgbs_d.append(ret["rgb_map_d"].cpu().numpy())
-        rgbs_s.append(ret["rgb_map_s"].cpu().numpy())
+        rgbs_full.append(ret["rgb_map_full"].cpu().numpy())
+        rgbs_obj.append(ret["rgb_map_obj"].cpu().numpy())
 
-        depths.append(ret["depth_map_full"].cpu().numpy())
-        depths_d.append(ret["depth_map_d"].cpu().numpy())
-        depths_s.append(ret["depth_map_s"].cpu().numpy())
+        depths_full.append(ret["depth_map_full"].cpu().numpy())
+        depths_obj.append(ret["depth_map_obj"].cpu().numpy())
 
         dynamicness.append(ret["dynamicness_map"].cpu().numpy())
 
-        if flows_gt_f is not None:
-            # Reconstruction. Flow is caused by both changing camera and changing time.
-            pose_f = render_poses[min(i + 1, int(len(render_poses)) - 1), :3, :4]
-            pose_b = render_poses[max(i - 1, 0), :3, :4]
-        else:
-            # Non training view-time. Flow is caused by changing time (just for visualization).
-            pose_f = render_poses[i, :3, :4]
-            pose_b = render_poses[i, :3, :4]
+        # TODO
+        # if flows_gt_f is not None:
+        #     # Reconstruction. Flow is caused by both changing camera and changing time.
+        #     pose_f = render_poses[min(i + 1, int(len(render_poses)) - 1), :, :3, :4]
+        #     pose_b = render_poses[max(i - 1, 0), :, :3, :4]
+        # else:
+        #     # Non training view-time. Flow is caused by changing time (just for visualization).
+        #     pose_f = render_poses[i, :, :3, :4]
+        #     pose_b = render_poses[i, :, :3, :4]
 
-        # Sceneflow induced optical flow
-        induced_flow_f_ = induce_flow(
-            H, W, focal, pose_f, ret["weights_d"], ret["raw_pts_f"], grid[..., :2]
-        )
-        induced_flow_b_ = induce_flow(
-            H, W, focal, pose_b, ret["weights_d"], ret["raw_pts_b"], grid[..., :2]
-        )
+        # # Sceneflow induced optical flow
+        # induced_flow_f_ = induce_flow(
+        #     H, W, focal, pose_f, ret["weights_obj"], ret["raw_pts_f"], grid[..., :2]
+        # )
+        # induced_flow_b_ = induce_flow(
+        #     H, W, focal, pose_b, ret["weights_obj"], ret["raw_pts_b"], grid[..., :2]
+        # )
 
-        if (i + 1) >= len(render_poses):
-            induced_flow_f = np.zeros((H, W, 2))
-        else:
-            induced_flow_f = induced_flow_f_.cpu().numpy()
-        if flows_gt_f is not None:
-            flow_gt_f = flows_gt_f[i].cpu().numpy()
-            induced_flow_f = np.concatenate((induced_flow_f, flow_gt_f), 0)
-        induced_flow_f_img = flow_to_image(induced_flow_f)
-        flows_f.append(induced_flow_f_img)
+        # if (i + 1) >= len(render_poses):
+        #     induced_flow_f = np.zeros((H, W, 2))
+        # else:
+        #     induced_flow_f = induced_flow_f_.cpu().numpy()
+        # if flows_gt_f is not None:
+        #     flow_gt_f = flows_gt_f[i].cpu().numpy()
+        #     induced_flow_f = np.concatenate((induced_flow_f, flow_gt_f), 0)
+        # induced_flow_f_img = flow_to_image(induced_flow_f)
+        # flows_f.append(induced_flow_f_img)
 
-        if (i - 1) < 0:
-            induced_flow_b = np.zeros((H, W, 2))
-        else:
-            induced_flow_b = induced_flow_b_.cpu().numpy()
-        if flows_gt_b is not None:
-            flow_gt_b = flows_gt_b[i].cpu().numpy()
-            induced_flow_b = np.concatenate((induced_flow_b, flow_gt_b), 0)
-        induced_flow_b_img = flow_to_image(induced_flow_b)
-        flows_b.append(induced_flow_b_img)
+        # if (i - 1) < 0:
+        #     induced_flow_b = np.zeros((H, W, 2))
+        # else:
+        #     induced_flow_b = induced_flow_b_.cpu().numpy()
+        # if flows_gt_b is not None:
+        #     flow_gt_b = flows_gt_b[i].cpu().numpy()
+        #     induced_flow_b = np.concatenate((induced_flow_b, flow_gt_b), 0)
+        # induced_flow_b_img = flow_to_image(induced_flow_b)
+        # flows_b.append(induced_flow_b_img)
 
-        if i == 0:
-            ret_dict["sceneflow_f_NDC"] = ret["sceneflow_f"].cpu().numpy()
-            ret_dict["sceneflow_b_NDC"] = ret["sceneflow_b"].cpu().numpy()
-            ret_dict["blending"] = ret["blending"].cpu().numpy()
+        # if i == 0:
+        #     ret_dict["sceneflow_f_NDC"] = ret["sceneflow_f"].cpu().numpy()
+        #     ret_dict["sceneflow_b_NDC"] = ret["sceneflow_b"].cpu().numpy()
+        #     ret_dict["blending"] = ret["blending"].cpu().numpy()
 
-            weights = np.concatenate(
-                (
-                    ret["weights_d"][..., None].cpu().numpy(),
-                    ret["weights_s"][..., None].cpu().numpy(),
-                    ret["blending"][..., None].cpu().numpy(),
-                    ret["weights_full"][..., None].cpu().numpy(),
-                )
-            )
-            ret_dict["weights"] = np.moveaxis(weights, [0, 1, 2, 3], [1, 2, 0, 3])
+        #     weights = np.concatenate(
+        #         (
+        #             ret["weights_d"][..., None].cpu().numpy(),
+        #             ret["weights_s"][..., None].cpu().numpy(),
+        #             ret["blending"][..., None].cpu().numpy(),
+        #             ret["weights_full"][..., None].cpu().numpy(),
+        #         )
+        #     )
+        #     ret_dict["weights"] = np.moveaxis(weights, [0, 1, 2, 3], [1, 2, 0, 3])
 
         if savedir is not None:
-            rgb8 = to8b(rgbs[-1])
+            rgb8 = to8b(rgbs_full[-1])
             filename = os.path.join(savedir, "{:03d}.png".format(i))
             imageio.imwrite(filename, rgb8)
 
-    ret_dict["rgbs"] = np.stack(rgbs, 0)
-    ret_dict["rgbs_d"] = np.stack(rgbs_d, 0)
-    ret_dict["rgbs_s"] = np.stack(rgbs_s, 0)
-    ret_dict["depths"] = np.stack(depths, 0)
-    ret_dict["depths_d"] = np.stack(depths_d, 0)
-    ret_dict["depths_s"] = np.stack(depths_s, 0)
-    ret_dict["dynamicness"] = np.stack(dynamicness, 0)
-    ret_dict["flows_f"] = np.stack(flows_f, 0)
-    ret_dict["flows_b"] = np.stack(flows_b, 0)
+    ret_dict["rgbs_full"] = np.stack(rgbs_full, 0)
+    ret_dict["depths_full"] = np.stack(depths_full, 0)
+
+    rgbs_obj = np.stack(rgbs_obj, 0)
+    depths_obj = np.stack(depths_obj, 0)
+    dynamicness = np.stack(dynamicness, 0)
+    for idx in range(rgbs_obj.shape[1]):
+        ret_dict[f"rgbs_obj_{idx}"] = rgbs_full[:, idx]
+
+    for idx in range(depths_obj.shape[1]):
+        ret_dict[f"depths_obj_{idx}"] = depths_obj[:, idx]
+
+    for idx in range(dynamicness.shape[1]):
+        ret_dict[f"dynamicness_{idx}"] = dynamicness[:, idx]
+
+    # ret_dict["flows_f"] = np.stack(flows_f, 0)
+    # ret_dict["flows_b"] = np.stack(flows_b, 0)
 
     return ret_dict
 
@@ -457,51 +374,60 @@ def raw2outputs(rgba, blending, z_vals, rays_d, raw_noise_std):
     alpha_obj = raw2alpha(rgba[..., 3] + noise, dists)  # [N_obj, N_rays, N_samples]
     # TODO check theory, the alphas should be multiplied by their blending factor
     alphas_full = 1.0 - torch.prod(1.0 - alpha_obj, 0)  # [N_rays, N_samples]
-    assert alphas_full.shape == torch.Tensor([N_rays, N_samples])
+    assert alphas_full.shape == torch.Size([N_rays, N_samples])
 
     T_obj = torch.cumprod(
-        torch.cat([torch.ones((alpha_obj.shape[:-1], 1)), 1.0 - alpha_obj + 1e-10], -1),
+        torch.cat(
+            [torch.ones((*alpha_obj.shape[:-1], 1)), 1.0 - alpha_obj + 1e-10], -1
+        ),
         -1,
     )[..., :-1]
-    assert T_obj.shape == torch.Tensor([N_obj, N_rays, N_samples])
+    assert T_obj.shape == torch.Size([N_obj, N_rays, N_samples])
 
     T_full = torch.cumprod(
         torch.cat(
             [
-                torch.ones((alphas_full.shape[:-1], 1)),
+                torch.ones((*alphas_full.shape[:-1], 1)),
                 torch.prod(1.0 - alpha_obj * blending, dim=0) + 1e-10,
             ],
             -1,
         ),
         -1,
     )[..., :-1]
-    assert T_full.shape == torch.Tensor([N_rays, N_samples])
+    assert T_full.shape == torch.Size([N_rays, N_samples])
 
     # Compute weight for RGB of each sample along each ray.  A cumprod() is
     # used to express the idea of the ray not having reflected up to this
     # sample yet.
     weights_obj = alpha_obj * T_obj
-    assert weights_obj.shape == torch.Tensor([N_obj, N_rays, N_samples])
+    assert weights_obj.shape == torch.Size([N_obj, N_rays, N_samples])
     # TODO check theory, instead of sum it should be product
     weights_full = torch.sum(alpha_obj * blending, dim=0) * T_full
-    assert weights_full.shape == torch.Tensor([N_rays, N_samples])
+    assert weights_full.shape == torch.Size([N_rays, N_samples])
 
     # Computed weighted color of each sample along each ray.
-    rgb_map_obj = torch.sum(weights_obj[..., None] * rgba, -2)
+    rgb_map_obj = torch.sum(weights_obj[..., None] * rgb_obj, -2)
     rgb_map_full = torch.sum(
         (T_full[None] * alpha_obj * blending)[..., None] * rgb_obj, (0, -2)
     )
+    assert rgb_map_obj.shape == torch.Size([N_obj, N_rays, 3])
+    assert rgb_map_full.shape == torch.Size([N_rays, 3])
 
     # Estimated depth map is expected distance.
     depth_map_obj = torch.sum(weights_obj * z_vals, -1)
-    depth_map_full = torch.sum(weights_full * z_vals, -1)
+    depth_map_full = torch.sum(weights_full * z_vals[0], -1)
+    assert depth_map_full.shape == torch.Size([N_rays])
+    assert depth_map_obj.shape == torch.Size([N_obj, N_rays])
 
     # Sum of weights along each ray. This value is in [0, 1] up to numerical error.
     acc_map_obj = torch.sum(weights_obj, -1)
     acc_map_full = torch.sum(weights_full, -1)
+    assert acc_map_full.shape == torch.Size([N_rays])
+    assert acc_map_obj.shape == torch.Size([N_obj, N_rays])
 
     # Computed dynamicness
     dynamicness_map_obj = torch.sum(weights_full[None] * blending, -1)
+    assert dynamicness_map_obj.shape == torch.Size([N_obj, N_rays])
 
     return (
         rgb_map_full,
@@ -549,7 +475,9 @@ def raw2outputs_d(raw_d, z_vals, rays_d, raw_noise_std):
     alpha_obj = raw2alpha(raw_d[..., 3] + noise, dists)  # [N_rays, N_samples]
 
     T_obj = torch.cumprod(
-        torch.cat([torch.ones((alpha_obj.shape[:-1], 1)), 1.0 - alpha_obj + 1e-10], -1),
+        torch.cat(
+            [torch.ones((*alpha_obj.shape[:-1], 1)), 1.0 - alpha_obj + 1e-10], -1
+        ),
         -1,
     )[..., :-1]
     # Compute weight for RGB of each sample along each ray.  A cumprod() is
@@ -558,9 +486,15 @@ def raw2outputs_d(raw_d, z_vals, rays_d, raw_noise_std):
     weights_obj = alpha_obj * T_obj
 
     # Computed weighted color of each sample along each ray.
-    rgb_map_obj = torch.sum(weights_obj[..., None] * rgba, -2)
+    rgb_map_obj = torch.sum(weights_obj[..., None] * rgb_obj, -2)
 
-    return rgb_map_obj, weights_obj
+    # Estimated depth map is expected distance.
+    depth_map_obj = torch.sum(weights_obj * z_vals, -1)
+
+    # Sum of weights along each ray. This value is in [0, 1] up to numerical error.
+    acc_map_obj = torch.sum(weights_obj, -1)
+
+    return rgb_map_obj, weights_obj, depth_map_obj, acc_map_obj
 
 
 def render_rays(
@@ -628,7 +562,7 @@ def render_rays(
     viewdirs = ray_batch[..., -3:] if ray_batch.shape[-1] > 8 else None
 
     # Extract lower, upper bound for ray distance.
-    bounds = torch.reshape(ray_batch[..., 6:8], [-1, 1, 2])
+    bounds = ray_batch[..., 6:8].unsqueeze(-2)
     near, far = bounds[..., 0], bounds[..., 1]
 
     # Decide where to sample along each ray. Under the logic, all rays will be sampled at
@@ -657,32 +591,43 @@ def render_rays(
     pts = (
         rays_o[..., None, :] + rays_d[..., None, :] * z_vals[..., :, None]
     )  # [N_obj, N_rays, N_samples, 3]
+    assert pts.shape == torch.Size([N_obj, N_rays, N_samples, 3])
 
     # Add the time dimension to xyz.
-    pts_ref = torch.cat([pts, torch.ones_like(pts[..., 0:1]) * t], -1)
-    assert pts_ref.shape == torch.Tensor([N_obj, N_rays, N_samples, 4])
-    for t_value in t:
-        assert pts_ref[..., 3:][0].unique() == torch.Tensor([t_value]), breakpoint()
+    pts_ref = torch.cat(
+        [pts, torch.ones_like(pts[..., 0:1]) * torch.Tensor(t)[:, None, None, None]], -1
+    )
+    assert pts_ref.shape == torch.Size([N_obj, N_rays, N_samples, 4])
+    for idx, t_value in enumerate(t):
+        assert pts_ref[..., 3:][idx].unique() == torch.Tensor([t_value]), breakpoint()
 
     # First pass: we have the staticNeRF results
-    raw_s = network_query_fn_s(pts_ref[..., :3][0], viewdirs, network_fn_s)
+    raw_s = network_query_fn_s(pts_ref[..., :3][0], viewdirs[0], network_fn_s)
     # raw_s:          [N_rays, N_samples, 5]
     # raw_s_rgb:      [N_rays, N_samples, 0:3]
     # raw_s_a:        [N_rays, N_samples, 3:4]
     # raw_s_blending: [N_rays, N_samples, 4:5]
 
     if pretrain:
-        rgb_map_s, _ = raw2outputs_d(raw_s[..., :4], z_vals, rays_d, raw_noise_std)
-        ret = {"rgb_map_s": rgb_map_s}
+        rgb_map_obj, _, depth_map_obj, acc_map_obj = raw2outputs_d(
+            raw_s[..., :4][None], z_vals, rays_d, raw_noise_std
+        )
+        ret = {
+            "rgb_map_full": rgb_map_obj[0],
+            "depth_map_full": depth_map_obj[0],
+            "acc_map_full": acc_map_obj[0],
+        }
         return ret
 
     # Second pass: we have the DyanmicNeRF results and the blending weight
     raw_d_values = []
     for dy_idx, dynamic_nerf_model in enumerate(network_fn_d):
         raw_d_values.append(
-            network_query_fn_d(pts_ref[dy_idx + 1], viewdirs, dynamic_nerf_model)
+            network_query_fn_d(
+                pts_ref[dy_idx + 1], viewdirs[dy_idx + 1], dynamic_nerf_model
+            )
         )
-    raw_d_values = torch.cat(raw_d_values, dim=0)
+    raw_d_values = torch.stack(raw_d_values, dim=0)
     # raw_d:          [N_obj, N_rays, N_samples, 11]
     # raw_d_rgb:      [N_obj, N_rays, N_samples, 0:3]
     # raw_d_a:        [N_obj, N_rays, N_samples, 3:4]
@@ -692,16 +637,19 @@ def render_rays(
 
     raw_s_rgba = raw_s[..., :4]
     raw_d_rgba = raw_d_values[..., :4]
-    raw_rgba = torch.cat([raw_s_rgba, raw_d_rgba], dim=0)
+    raw_rgba = torch.cat([raw_s_rgba[None], raw_d_rgba], dim=0)
 
     blending_d = raw_d_values[..., 10]
     blending_s = raw_s[..., 4]
-    blending = torch.cat([blending_s, blending_d], dim=0)
+    blending = torch.cat([blending_s[None], blending_d], dim=0)
     blending = blending / torch.norm(blending, dim=0, keepdim=True)
 
-    assert raw_s_rgba.shape == torch.Tensor([N_rays, N_samples, 4])
-    assert raw_d_rgba.shape == torch.Tensor([N_obj - 1, N_rays, N_samples, 4])
-    assert blending.shape == torch.Tensor([N_obj, N_rays, N_samples])
+    assert raw_s_rgba.shape == torch.Size([N_rays, N_samples, 4])
+    assert raw_d_rgba.shape == torch.Size([N_obj - 1, N_rays, N_samples, 4])
+    assert raw_rgba.shape == torch.Size([N_obj, N_rays, N_samples, 4])
+    assert blending_s.shape == torch.Size([N_rays, N_samples])
+    assert blending_d.shape == torch.Size([N_obj - 1, N_rays, N_samples])
+    assert blending.shape == torch.Size([N_obj, N_rays, N_samples])
 
     # Rendering.
     (
@@ -725,7 +673,7 @@ def render_rays(
         "depth_map_obj": depth_map_obj,
         "acc_map_obj": acc_map_obj,
         "weights_obj": weights_obj,
-        "dynamicness_map": dynamicness_map_obj,
+        "dynamicness_map_obj": dynamicness_map_obj,
         "blending": blending,
         "raw_pts": pts_ref[..., :3],
     }
@@ -736,18 +684,38 @@ def render_rays(
 
     t_interval = 1.0 / num_img * 2.0
     pts_f = torch.cat(
-        [pts + sceneflow_f, torch.ones_like(pts[..., 0:1]) * (t + t_interval)], -1
+        [
+            pts + sceneflow_f,
+            torch.ones_like(pts[..., 0:1])
+            * (torch.Tensor(t)[:, None, None, None] + t_interval),
+        ],
+        -1,
     )
-    assert pts_f.shape == torch.Tensor([N_obj, N_rays, N_samples, 4])
-    for t_value in t:
-        assert pts_f[..., 3:][0].unique() == torch.Tensor([t_value]), breakpoint()
+    assert pts_f.shape == torch.Size([N_obj, N_rays, N_samples, 4])
+    for idx, t_value in enumerate(t):
+        assert (
+            torch.abs(
+                pts_f[..., 3:][idx].unique() - torch.Tensor([t_value + t_interval])
+            ).item()
+            < 1e-6
+        ), breakpoint()
 
     pts_b = torch.cat(
-        [pts + sceneflow_b, torch.ones_like(pts[..., 0:1]) * (t - t_interval)], -1
+        [
+            pts + sceneflow_b,
+            torch.ones_like(pts[..., 0:1])
+            * (torch.Tensor(t)[:, None, None, None] - t_interval),
+        ],
+        -1,
     )
-    assert pts_b.shape == torch.Tensor([N_obj, N_rays, N_samples, 4])
-    for t_value in t:
-        assert pts_b[..., 3:][0].unique() == torch.Tensor([t_value]), breakpoint()
+    assert pts_b.shape == torch.Size([N_obj, N_rays, N_samples, 4])
+    for idx, t_value in enumerate(t):
+        assert (
+            torch.abs(
+                pts_b[..., 3:][idx].unique() - torch.Tensor([t_value - t_interval])
+            ).item()
+            < 1e-6
+        ), breakpoint()
 
     ret["sceneflow_b"] = sceneflow_b
     ret["sceneflow_f"] = sceneflow_f
@@ -789,25 +757,39 @@ def render_rays(
     pts_b_b = torch.cat(
         [
             pts_b[..., :3] + ret["sceneflow_b_b"],
-            torch.ones_like(pts[..., 0:1]) * (t - t_interval * 2),
+            torch.ones_like(pts[..., 0:1])
+            * (torch.Tensor(t)[:, None, None, None] - t_interval * 2),
         ],
         -1,
     )
-    assert pts_b_b.shape == torch.Tensor([N_obj, N_rays, N_samples, 4])
-    for t_value in t:
-        assert pts_b_b[..., 3:][0].unique() == torch.Tensor([t_value]), breakpoint()
+    assert pts_b_b.shape == torch.Size([N_obj, N_rays, N_samples, 4])
+    for idx, t_value in enumerate(t):
+        assert (
+            torch.abs(
+                pts_b_b[..., 3:][idx].unique()
+                - torch.Tensor([t_value - t_interval * 2])
+            ).item()
+            < 1e-6
+        ), breakpoint()
     ret["raw_pts_b_b"] = pts_b_b[..., :3]
 
     pts_f_f = torch.cat(
         [
             pts_f[..., :3] + ret["sceneflow_f_f"],
-            torch.ones_like(pts[..., 0:1]) * (t + t_interval * 2),
+            torch.ones_like(pts[..., 0:1])
+            * (torch.Tensor(t)[:, None, None, None] + t_interval * 2),
         ],
         -1,
     )
-    assert pts_f_f.shape == torch.Tensor([N_obj, N_rays, N_samples, 4])
-    for t_value in t:
-        assert pts_f_f[..., 3:][0].unique() == torch.Tensor([t_value]), breakpoint()
+    assert pts_f_f.shape == torch.Size([N_obj, N_rays, N_samples, 4])
+    for idx, t_value in enumerate(t):
+        assert (
+            torch.abs(
+                pts_f_f[..., 3:][idx].unique()
+                - torch.Tensor([t_value + t_interval * 2])
+            ).item()
+            < 1e-6
+        ), breakpoint()
     ret["raw_pts_f_f"] = pts_f_f[..., :3]
 
     if chain_5frames:

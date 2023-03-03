@@ -156,10 +156,10 @@ def _load_data(basedir, factor=None, width=None, height=None, load_imgs=True):
 
     mask_dir = os.path.join(basedir, "motion_masks")
     masks = []
-    for mask_sub_dir in os.listdir(mask_dir):
+    for mask_sub_dir in sorted(os.listdir(mask_dir)):
         maskfiles = [
-            os.path.join(mask_dir, f)
-            for f in sorted(os.listdir(mask_sub_dir))
+            os.path.join(mask_dir, mask_sub_dir, f)
+            for f in sorted(os.listdir(os.path.join(mask_dir, mask_sub_dir)))
             if f.endswith("png")
         ]
 
@@ -172,7 +172,7 @@ def _load_data(basedir, factor=None, width=None, height=None, load_imgs=True):
         submasks = np.stack(submasks, -1)
         submasks = np.float32(submasks > 1e-3)
         masks.append(submasks)
-    masks = np.concatenate(masks, axis=0)
+    masks = np.stack(masks, axis=0)
 
     flow_dir = os.path.join(basedir, "flow")
     flows_f = []
@@ -577,7 +577,9 @@ def get_data_variables(args):
     num_img = float(poses.shape[0])
     N_rand = args.N_rand
     assert len(poses) == len(images)
-    print("Loaded llff", images.shape, render_poses.shape, hwf, args.datadir)
+    print(
+        "Loaded llff", images.shape, masks.shape, render_poses.shape, hwf, args.datadir
+    )
 
     print("DEFINING BOUNDS")
     if args.no_ndc:
