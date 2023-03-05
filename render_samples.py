@@ -8,6 +8,34 @@ from load_llff import get_data_variables
 from render_utils import render_path, save_res
 from run_nerf_helpers import create_nerf
 
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+
+def get_rotation(axis, angle):
+    """
+    axis can be either "x" or "y"
+    angle must be in radians
+    """
+    # Specify new camera pose for novel scene
+    R = (
+        np.array(
+            [
+                [1, 0, 0],
+                [0, np.cos(angle), np.sin(angle)],
+                [0, -np.sin(angle), np.cos(angle)],
+            ]
+        )
+        if axis == "x"  # Rotate along x axis (verified that it is correct)
+        else np.array(
+            [
+                [np.cos(angle), 0, -np.sin(angle)],
+                [0, 1, 0],
+                [np.sin(angle), 0, np.cos(angle)],
+            ]
+        )
+    )  # Rotate camera along y axis (y-axis goes from up to down instead of down to up) (see get_rays() function)
+    return R
+
 
 def save_render(
     basedir,
@@ -46,6 +74,8 @@ def render_fix(
     view_idx=None,
     time_idx=None,
     key="",
+    rotation_axis="x",
+    rotation_degrees=0,
 ):
     """
     Fix view if view_idx is not None.
@@ -71,8 +101,13 @@ def render_fix(
         time2render = i_train / float(num_img) * 2.0 - 1.0
         pose2render = torch.Tensor(poses)
 
+    rotation = torch.from_numpy(
+        get_rotation(rotation_axis, np.deg2rad(rotation_degrees))
+    ).type(pose2render.type())
+    novel_pose2render = pose2render.clone()
+    novel_pose2render[:, :3, :3] = novel_pose2render[:, :3, :3] @ rotation.T
     time2render = np.stack([time2render] * 2, 1)
-    pose2render = torch.stack([pose2render] * 2, 1)
+    pose2render = torch.stack([pose2render, novel_pose2render], 1)
 
     save_render(
         basedir,
@@ -96,6 +131,8 @@ def render_novel_view_and_time(
     render_kwargs_test,
     render_poses,
     key="",
+    rotation_axis="x",
+    rotation_degrees=0,
 ):
     """
     Change time and view at the same time.
@@ -123,8 +160,13 @@ def render_novel_view_and_time(
         time2render = time2render[: len(render_poses)]
         pose2render = torch.Tensor(render_poses)
 
+    rotation = torch.from_numpy(
+        get_rotation(rotation_axis, np.deg2rad(rotation_degrees))
+    ).type(pose2render.type())
+    novel_pose2render = pose2render.clone()
+    novel_pose2render[:, :3, :3] = novel_pose2render[:, :3, :3] @ rotation.T
     time2render = np.stack([time2render] * 2, 1)
-    pose2render = torch.stack([pose2render] * 2, 1)
+    pose2render = torch.stack([pose2render, novel_pose2render], 1)
 
     save_render(
         basedir,
@@ -174,6 +216,9 @@ def main():
     render_kwargs_train.update(bds_dict)
     render_kwargs_test.update(bds_dict)
 
+    axis = "y"
+    angle = 15
+
     fix_values = [
         (None, None),
         (args.view_idx, None),
@@ -190,7 +235,9 @@ def main():
             poses,
             view_idx=fix_value[0],
             time_idx=fix_value[1],
-            key="testing_",
+            key=f"testing_angle_{axis}_{angle}_",
+            rotation_axis=axis,
+            rotation_degrees=angle,
         )
     render_novel_view_and_time(
         basedir,
@@ -200,7 +247,9 @@ def main():
         hwf,
         render_kwargs_test,
         render_poses,
-        key="testing_",
+        key=f"testing_angle_{axis}_{angle}_",
+        rotation_axis=axis,
+        rotation_degrees=angle,
     )
 
 
