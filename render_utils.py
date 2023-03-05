@@ -197,11 +197,9 @@ def render_path(
     rgbs_full = []
     rgbs_obj = []
     depths_full = []
-    depths_obj = []
+    dynamicness = []
     flows_f = []
     flows_b = []
-    dynamicness = []
-    blending = []
 
     grid = np.stack(
         np.meshgrid(
@@ -240,11 +238,8 @@ def render_path(
 
         rgbs_full.append(ret["rgb_map_full"].cpu().numpy())
         rgbs_obj.append(ret["rgb_map_obj"].cpu().numpy())
-
         depths_full.append(ret["depth_map_full"].cpu().numpy())
-        depths_obj.append(ret["depth_map_obj"].cpu().numpy())
-
-        dynamicness.append(ret["dynamicness_map"].cpu().numpy())
+        dynamicness.append(ret["dynamicness_map_obj"].cpu().numpy())
 
         # TODO
         # if flows_gt_f is not None:
@@ -308,13 +303,9 @@ def render_path(
     ret_dict["depths_full"] = np.stack(depths_full, 0)
 
     rgbs_obj = np.stack(rgbs_obj, 0)
-    depths_obj = np.stack(depths_obj, 0)
     dynamicness = np.stack(dynamicness, 0)
     for idx in range(rgbs_obj.shape[1]):
-        ret_dict[f"rgbs_obj_{idx}"] = rgbs_full[:, idx]
-
-    for idx in range(depths_obj.shape[1]):
-        ret_dict[f"depths_obj_{idx}"] = depths_obj[:, idx]
+        ret_dict[f"rgbs_obj_{idx}"] = rgbs_obj[:, idx]
 
     for idx in range(dynamicness.shape[1]):
         ret_dict[f"dynamicness_{idx}"] = dynamicness[:, idx]
@@ -344,6 +335,7 @@ def raw2outputs(rgba, blending, z_vals, rays_d, raw_noise_std):
     # Function for computing density from model prediction. This value is
     # strictly between [0, 1].
     N_obj, N_rays, N_samples, _ = rgba.shape
+    blending = blending / (blending.sum(dim=0, keepdim=True) + 1e-8)
 
     def raw2alpha(raw, dists, act_fn=F.relu):
         return 1.0 - torch.exp(-act_fn(raw) * dists)
@@ -439,6 +431,7 @@ def raw2outputs(rgba, blending, z_vals, rays_d, raw_noise_std):
         acc_map_obj,
         weights_obj,
         dynamicness_map_obj,
+        alpha_obj,
     )
 
 
@@ -507,7 +500,6 @@ def render_rays(
     network_query_fn_s,
     N_samples,
     num_img,
-    DyNeRF_blending,
     pretrain=False,
     lindisp=False,
     perturb=0.0,
@@ -603,19 +595,23 @@ def render_rays(
 
     # First pass: we have the staticNeRF results
     raw_s = network_query_fn_s(pts_ref[..., :3][0], viewdirs[0], network_fn_s)
+    raw_s_rgba = raw_s[..., :4]
+    blending_s = raw_s[..., 4]
     # raw_s:          [N_rays, N_samples, 5]
     # raw_s_rgb:      [N_rays, N_samples, 0:3]
     # raw_s_a:        [N_rays, N_samples, 3:4]
     # raw_s_blending: [N_rays, N_samples, 4:5]
 
     if pretrain:
-        rgb_map_obj, _, depth_map_obj, acc_map_obj = raw2outputs_d(
-            raw_s[..., :4][None], z_vals, rays_d, raw_noise_std
+        rgb_map_obj, weights_obj, depth_map_obj, acc_map_obj = raw2outputs_d(
+            raw_s_rgba[None], z_vals, rays_d, raw_noise_std
         )
+        dynamicness_map_obj = torch.sum(weights_obj * blending_s[None], -1)
         ret = {
             "rgb_map_full": rgb_map_obj[0],
             "depth_map_full": depth_map_obj[0],
             "acc_map_full": acc_map_obj[0],
+            "dynamicness_map_full": dynamicness_map_obj[0],
         }
         return ret
 
@@ -635,14 +631,11 @@ def render_rays(
     # sceneflow_f:    [N_obj, N_rays, N_samples, 7:10]
     # raw_d_blending: [N_obj, N_rays, N_samples, 10:11]
 
-    raw_s_rgba = raw_s[..., :4]
     raw_d_rgba = raw_d_values[..., :4]
     raw_rgba = torch.cat([raw_s_rgba[None], raw_d_rgba], dim=0)
 
     blending_d = raw_d_values[..., 10]
-    blending_s = raw_s[..., 4]
     blending = torch.cat([blending_s[None], blending_d], dim=0)
-    blending = blending / torch.norm(blending, dim=0, keepdim=True)
 
     assert raw_s_rgba.shape == torch.Size([N_rays, N_samples, 4])
     assert raw_d_rgba.shape == torch.Size([N_obj - 1, N_rays, N_samples, 4])
@@ -662,6 +655,7 @@ def render_rays(
         acc_map_obj,
         weights_obj,
         dynamicness_map_obj,
+        alpha_obj,
     ) = raw2outputs(raw_rgba, blending, z_vals, rays_d, raw_noise_std)
 
     ret = {
@@ -674,6 +668,7 @@ def render_rays(
         "acc_map_obj": acc_map_obj,
         "weights_obj": weights_obj,
         "dynamicness_map_obj": dynamicness_map_obj,
+        "alpha_obj": alpha_obj,
         "blending": blending,
         "raw_pts": pts_ref[..., :3],
     }

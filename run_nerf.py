@@ -9,8 +9,10 @@ from tensorboardX import SummaryWriter
 
 from load_llff import get_data_variables
 from losses import (
+    blending_loss,
     consistency_loss,
     depth_loss,
+    img2mae,
     img2mse,
     loss_RGB,
     loss_RGB_full,
@@ -76,7 +78,6 @@ def train():
     H, W, focal = hwf
 
     # Create nerf model
-    # TODO create multiple nerfs for multiple dynamic objects
     num_objects = len(masks[0]) - 1 or 1
     render_kwargs_train, render_kwargs_test, start, grad_vars, optimizer = create_nerf(
         args, num_objects
@@ -97,10 +98,9 @@ def train():
 
     # Pre-train StaticNeRF
     if args.pretrain:
-        # Pre-train StaticNeRF first and use DynamicNeRF to blend
-        assert args.DyNeRF_blending == True
 
         render_kwargs_train.update({"pretrain": True})
+        render_kwargs_test.update({"pretrain": False})
         print("BEGIN PRETRAINING")
         i_train = np.arange(int(num_img))
         print("TRAIN views are", i_train)
@@ -141,6 +141,11 @@ def train():
                     ret["rgb_map_full"], target_rgb, {}, "_pretrain"
                 )
                 loss = args.static_loss_lambda * loss_dict["img_pretrain_loss"]
+                # TODO rerun experiment without this loss to determine if needed
+                loss_dict["mask_pretrain_loss"] = img2mae(
+                    ret["dynamicness_map_full"], batch_mask
+                )
+                loss += args.static_loss_lambda * loss_dict["mask_pretrain_loss"]
                 loss.backward()
                 optimizer.step()
                 new_lrate = decay_lr(args, i, optimizer)
@@ -152,6 +157,12 @@ def train():
                         f"Pretraining step: {i}, Loss: {loss}, Time: {dt}, expname: {expname}"
                     )
                     writer.add_scalar("pretrain_loss", loss.item(), i)
+                    writer.add_scalar(
+                        "pretrain_img_loss", loss_dict["img_pretrain_loss"].item(), i
+                    )
+                    writer.add_scalar(
+                        "pretrain_mask_loss", loss_dict["mask_pretrain_loss"].item(), i
+                    )
                     writer.add_scalar(
                         "pretrain_psnr_s", loss_dict["psnr_pretrain"].item(), i
                     )
@@ -212,20 +223,27 @@ def train():
                         key="pretrain_",
                     )
 
-        # Save the pretrained weight
-        path = os.path.join(basedir, expname, "Pretrained_S.tar")
-        save_ckpt(path, i, render_kwargs_train, optimizer, False)
+            # Save the pretrained weight
+            path = os.path.join(basedir, expname, "Pretrained_S.tar")
+            save_ckpt(path, i, render_kwargs_train, optimizer, False)
 
         # Reset
         render_kwargs_train.update({"pretrain": False})
+        render_kwargs_test.update({"pretrain": False})
 
         # Fix the StaticNeRF and only train the DynamicNeRF
         grad_vars_d = list()
         for network_d in render_kwargs_train["network_fn_d"]:
-            grad_vars_d += list(network_d.paramters())
+            grad_vars_d += list(network_d.parameters())
+
+        if not args.fix_static_nerf_after_pretraining:
+            grad_vars_d += list(render_kwargs_train["network_fn_s"].parameters())
+
         optimizer = torch.optim.Adam(
             params=grad_vars_d, lr=args.lrate, betas=(0.9, 0.999)
         )
+        start = 0
+        print("Resetting step to ", start)
 
     # Start actual training
     print("BEGIN")
@@ -237,7 +255,8 @@ def train():
         time0 = time.time()
 
         # Use frames at t-2, t-1, t, t+1, t+2 (adapted from NSFF)
-        chain_5frames = i >= (decay_iteration * 2000)
+        # chain_5frames = i >= (decay_iteration * 2000)
+        chain_5frames = False
 
         # Lambda decay.
         Temp = 1.0 / (10 ** (i // (decay_iteration * 1000)))
@@ -261,19 +280,28 @@ def train():
         )
         img_i = img_i.astype(int)
         target_rgb = select_batch_multiple(images[img_i], select_coords)
-        target_rgb_full = select_batch(images[img_i[0]], select_coords)
         batch_grid = select_batch_multiple(grids[img_i], select_coords)  # (N_rand, 8)
         batch_invdepth = select_batch_multiple(invdepths[img_i], select_coords)
+        target_rgb_full = select_batch(images[img_i[0]], select_coords)
+        batch_invdepth_full = select_batch(invdepths[img_i[0]], select_coords)
 
         optimizer.zero_grad()
         loss = 0
         loss_dict = {}
 
-        # if i < decay_iteration * 1000:
+        # TODO revisit mask loss for points where both static and dynamic are present
         loss_dict = mask_loss(
-            loss_dict, "", ret["blending"], ret["dynamicness_map_obj"], batch_mask
+            loss_dict,
+            "",
+            ret["blending"],
+            ret["dynamicness_map_obj"],
+            ret["alpha_obj"],
+            batch_mask,
         )
         loss += args.mask_loss_lambda * loss_dict["mask_loss"]
+
+        loss_dict = blending_loss(loss_dict, ret)
+        loss += args.mask_loss_lambda * loss_dict["blending_loss"]
 
         loss_dict = loss_RGB_full(
             ret["rgb_map_full"], target_rgb_full, loss_dict, "_full"
@@ -285,53 +313,60 @@ def train():
         )
         loss += args.dynamic_loss_lambda * loss_dict["img_obj_loss"]
 
+        loss_dict = order_loss(ret, loss_dict, batch_mask)
+        loss += args.order_loss_lambda * loss_dict["order_loss"]
+
+        # Depth in NDC space equals to negative disparity in Euclidean space.
+        loss_dict["depth_loss"] = depth_loss(
+            ret["depth_map_obj"], -batch_invdepth, batch_mask
+        )
+        # loss += args.depth_loss_lambda * loss_dict["depth_loss"]
+        loss_dict["depth_loss_full"] = depth_loss(
+            [ret["depth_map_full"]], [-batch_invdepth_full]
+        )
+        # loss += args.depth_loss_lambda * loss_dict["depth_loss_full"]
+
+        # TODO check and fix scene flow losses
+        loss_dict = slow_scene_flow(ret, loss_dict)
+        # loss += args.slow_loss_lambda * loss_dict["slow_loss"]
+
+        loss_dict = smooth_scene_flow(ret, loss_dict, hwf, batch_mask)
+        # loss += args.smooth_loss_lambda * loss_dict["smooth_loss"]
+        # loss += args.smooth_loss_lambda * loss_dict["sp_smooth_loss"]
+        # loss += args.smooth_loss_lambda * loss_dict["sf_smooth_loss"]
+
+        loss_dict = consistency_loss(ret, loss_dict)
+        # loss += args.consistency_loss_lambda * loss_dict["consistency_loss"]
+
+        loss_dict = sparsity_loss(ret, loss_dict)
+        # loss += args.sparse_loss_lambda * loss_dict["sparse_loss"]
+
+        loss_dict = motion_loss(ret, loss_dict, poses, img_i, batch_grid, hwf)
+        # if "flow_f_loss" in loss_dict:
+        #     loss += args.flow_loss_lambda * Temp * loss_dict["flow_f_loss"]
+        # if "flow_b_loss" in loss_dict:
+        #     loss += args.flow_loss_lambda * Temp * loss_dict["flow_b_loss"]
+
         loss_dict = loss_RGB(
             ret["rgb_map_d_f"], target_rgb, loss_dict, "_d_f", batch_mask[1:], 1
         )
-        loss += args.dynamic_loss_lambda * loss_dict["img_d_f_loss"]
+        # loss += args.dynamic_loss_lambda * loss_dict["img_d_f_loss"]
 
         loss_dict = loss_RGB(
             ret["rgb_map_d_b"], target_rgb, loss_dict, "_d_b", batch_mask[1:], 1
         )
-        loss += args.dynamic_loss_lambda * loss_dict["img_d_b_loss"]
+        # loss += args.dynamic_loss_lambda * loss_dict["img_d_b_loss"]
 
         if chain_5frames:
             loss_dict = loss_RGB(
                 ret["rgb_map_d_b_b"], target_rgb, loss_dict, "_d_b_b", batch_mask[1:]
             )
-            loss += args.dynamic_loss_lambda * loss_dict["img_d_b_b_loss"]
+            # loss += args.dynamic_loss_lambda * loss_dict["img_d_b_b_loss"]
 
             loss_dict = loss_RGB(
                 ret["rgb_map_d_f_f"], target_rgb, loss_dict, "_d_f_f", batch_mask[1:]
             )
-            loss += args.dynamic_loss_lambda * loss_dict["img_d_f_f_loss"]
-
-        loss_dict = order_loss(ret, loss_dict, batch_mask)
-        loss += args.order_loss_lambda * loss_dict["order_loss"]
-
-        # Depth in NDC space equals to negative disparity in Euclidean space.
-        loss_dict["depth_loss"] = depth_loss(ret["depth_map_obj"], -batch_invdepth)
-        loss += args.depth_loss_lambda * Temp * loss_dict["depth_loss"]
-
-        loss_dict = slow_scene_flow(ret, loss_dict)
-        loss += args.slow_loss_lambda * loss_dict["slow_loss"]
-
-        loss_dict = smooth_scene_flow(ret, loss_dict, hwf, batch_mask)
-        loss += args.smooth_loss_lambda * loss_dict["smooth_loss"]
-        loss += args.smooth_loss_lambda * loss_dict["sp_smooth_loss"]
-        loss += args.smooth_loss_lambda * loss_dict["sf_smooth_loss"]
-
-        loss_dict = consistency_loss(ret, loss_dict)
-        loss += args.consistency_loss_lambda * loss_dict["consistency_loss"]
-
-        loss_dict = sparsity_loss(ret, loss_dict)
-        loss += args.sparse_loss_lambda * loss_dict["sparse_loss"]
-
-        loss_dict = motion_loss(ret, loss_dict, poses, img_i, batch_grid, hwf)
-        if "flow_f_loss" in loss_dict:
-            loss += args.flow_loss_lambda * Temp * loss_dict["flow_f_loss"]
-        if "flow_b_loss" in loss_dict:
-            loss += args.flow_loss_lambda * Temp * loss_dict["flow_b_loss"]
+            # loss += args.dynamic_loss_lambda * loss_dict["img_d_f_f_loss"]
 
         loss.backward()
         optimizer.step()

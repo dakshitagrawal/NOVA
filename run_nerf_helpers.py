@@ -331,7 +331,6 @@ def create_nerf(args, num_objects):
         "use_viewdirs": args.use_viewdirs,
         "raw_noise_std": args.raw_noise_std,
         "inference": False,
-        "DyNeRF_blending": args.DyNeRF_blending,
     }
 
     # NDC only good for LLFF-style forward facing data
@@ -360,7 +359,7 @@ def create_nerf(args, num_objects):
         ckpts = [
             os.path.join(basedir, expname, f)
             for f in sorted(os.listdir(os.path.join(basedir, expname)))
-            if "tar" in f
+            if ("tar" in f and "Pretrained_S" not in f)
         ]
     print("Found ckpts", ckpts)
     if len(ckpts) > 0 and not args.no_reload:
@@ -555,7 +554,7 @@ def percentile(t, q):
 
 def save_res(moviebase, ret, fps=None):
     if fps is None:
-        fps = 4 if len(ret["rgbs"]) < 25 else 24
+        fps = 4 if len(ret["rgbs_full"]) < 25 else 24
 
     for k in ret:
         if "rgbs" in k or "depths" in k or "dynamicness" in k or "weights" in k:

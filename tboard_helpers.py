@@ -20,6 +20,13 @@ def write_static_imgs(writer, i, ret, target, mask, key=""):
         global_step=i,
         dataformats="HW",
     )
+    if "dynamicness_map_full" in ret:
+        writer.add_image(
+            f"{key}dynamicness",
+            ret["dynamicness_map_full"],
+            global_step=i,
+            dataformats="HW",
+        )
     writer.add_image(f"{key}acc", ret["acc_map_full"], global_step=i, dataformats="HW")
 
 
@@ -79,12 +86,6 @@ def write_dynamic_imgs(writer, i, ret, grid, invdepth, pose_f, pose_b, hwf):
             torch.clamp(ret["rgb_map_obj"][idx], 0.0, 1.0),
             global_step=i,
             dataformats="HWC",
-        )
-        writer.add_image(
-            f"depth_obj/{idx}",
-            normalize_depth(ret["depth_map_obj"][idx]),
-            global_step=i,
-            dataformats="HW",
         )
         writer.add_image(
             f"acc_obj/{idx}", ret["acc_map_obj"][idx], global_step=i, dataformats="HW"

@@ -5,8 +5,8 @@ import numpy as np
 import torch
 
 from load_llff import get_data_variables
-from run_nerf_helpers import create_nerf
 from render_utils import render_path, save_res
+from run_nerf_helpers import create_nerf
 
 
 def save_render(
@@ -71,6 +71,9 @@ def render_fix(
         time2render = i_train / float(num_img) * 2.0 - 1.0
         pose2render = torch.Tensor(poses)
 
+    time2render = np.stack([time2render] * 2, 1)
+    pose2render = torch.stack([pose2render] * 2, 1)
+
     save_render(
         basedir,
         expname,
@@ -120,6 +123,9 @@ def render_novel_view_and_time(
         time2render = time2render[: len(render_poses)]
         pose2render = torch.Tensor(render_poses)
 
+    time2render = np.stack([time2render] * 2, 1)
+    pose2render = torch.stack([pose2render] * 2, 1)
+
     save_render(
         basedir,
         expname,
@@ -161,8 +167,9 @@ def main():
     ) = get_data_variables(args)
 
     # Create nerf model
+    num_objects = len(masks[0]) - 1 or 1
     render_kwargs_train, render_kwargs_test, start, grad_vars, optimizer = create_nerf(
-        args
+        args, num_objects
     )
     render_kwargs_train.update(bds_dict)
     render_kwargs_test.update(bds_dict)

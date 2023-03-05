@@ -230,12 +230,12 @@ def config_parser():
         "--sparse_loss_lambda", type=float, default=0.1, help="lambda of sparse loss"
     )
     parser.add_argument(
-        "--DyNeRF_blending",
-        action="store_true",
-        help="use Dynamic NeRF to predict blending weight",
+        "--pretrain", action="store_true", help="Pretrain the StaticneRF"
     )
     parser.add_argument(
-        "--pretrain", action="store_true", help="Pretrain the StaticneRF"
+        "--fix_static_nerf_after_pretraining",
+        action="store_true",
+        help="Fix StaticNeRF after pretraining",
     )
     parser.add_argument(
         "--ft_path_S",

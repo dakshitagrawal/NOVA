@@ -69,15 +69,30 @@ def consistency_loss(ret, loss_dict):
     return loss_dict
 
 
-def mask_loss(loss_dict, key, blending, dynamicness, mask):
+def mask_loss(loss_dict, key, blending, dynamicness, alpha, mask):
     for obj_idx in range(len(mask)):
         obj_blending = blending[obj_idx]
         obj_mask = mask[obj_idx]
         obj_dynamicness = dynamicness[obj_idx]
+        obj_alpha = alpha[obj_idx]
 
-        loss_dict[f"mask{key}_loss/{obj_idx:02d}"] = L1(
-            obj_blending[obj_mask.type(torch.bool)]
-        ) + img2mae(obj_dynamicness[..., None], 1 - obj_mask)
+        loss_dict[f"mask{key}_loss/{obj_idx:02d}"] = img2mae(obj_dynamicness, obj_mask)
+
+        if obj_idx != 0:
+            # TODO
+            # Penalize blending of static if it is at same point as dynamic object point
+            # The above will fail when we move the dynamic object moves through time or
+            # the dynamic camera moves
+            # Sparsity loss with blending loss might help ensure this.
+
+            # Make blending outside dynamic mask be zero
+            loss_dict[f"mask{key}_loss/{obj_idx:02d}"] += L1(
+                obj_blending[(1 - obj_mask).type(torch.bool)]
+            )
+            # Make alphas outside dynamic mask be zero
+            loss_dict[f"mask{key}_loss/{obj_idx:02d}"] += L1(
+                obj_alpha[(1 - obj_mask).type(torch.bool)]
+            )
 
     loss_dict[f"mask{key}_loss"] = torch.sum(
         torch.stack([loss_dict[f"mask{key}_loss/{i:02d}"] for i in range(len(mask))])
@@ -85,7 +100,13 @@ def mask_loss(loss_dict, key, blending, dynamicness, mask):
     return loss_dict
 
 
+def blending_loss(loss_dict, ret):
+    loss_dict["blending_loss"] = L1(1.0 - torch.sum(ret["blending"], dim=0))
+    return loss_dict
+
+
 def sparsity_loss(ret, loss_dict):
+    # Ensures that weights and blending of individual cameras are either 0 or 1
     loss_dict["sparse_loss"] = entropy(ret["weights_obj"]) + entropy(ret["blending"])
     return loss_dict
 
@@ -97,14 +118,16 @@ def slow_scene_flow(ret, loss_dict):
 
 
 def order_loss(ret, loss_dict, mask):
-    loss_dict["order_loss"] = torch.mean(
-        torch.square(
-            (ret["depth_map_obj"][1:] - ret["depth_map_obj"][0:1].detach())[
-                mask[1:].type(torch.bool)
-            ]
-        )
+    # Ensure depth for background is same by dynamic nerf and static nerf
+    loss_dict["order_loss"] = img2mae(
+        ret["depth_map_obj"][1:], ret["depth_map_obj"][0:1], mask[0]
     )
 
+    # TODO add loss to ensure depth map of obj is before static background for
+    # pixels where the mask is positive for dynamic
+    # loss_dict["order_loss"] += L2(
+    #     torch.maximum(ret["depth_map_obj"][1:] - ret["depth_map_obj"][0:1], 0.0), mask[1:]
+    # )
     return loss_dict
 
 
@@ -216,20 +239,22 @@ def compute_sf_smooth_loss(pts, pts_f, pts_b, H, W, f):
     return L2(sceneflow_f + sceneflow_b)
 
 
-def depth_loss(dyn_depth, gt_depth):
+def depth_loss(dyn_depth, gt_depth, mask=None):
+    def norm_depth_map(depth_map, M=None):
+        d_map = depth_map[M.type(torch.bool)] if M is not None else depth_map
+        t_d = torch.median(d_map)
+        s_d = torch.mean(torch.abs(d_map))
+        return (d_map - t_d) / s_d
+
     loss = None
     for i in range(len(dyn_depth)):
-        t_d = torch.median(dyn_depth[i])
-        s_d = torch.mean(torch.abs(dyn_depth[i] - t_d))
-        dyn_depth_norm = (dyn_depth[i] - t_d) / s_d
-
-        t_gt = torch.median(gt_depth[i])
-        s_gt = torch.mean(torch.abs(gt_depth[i] - t_gt))
-        gt_depth_norm = (gt_depth[i] - t_gt) / s_gt
+        mask_i = mask[i] if mask is not None else None
+        dyn_depth_norm = norm_depth_map(dyn_depth[i], mask_i)
+        gt_depth_norm = norm_depth_map(gt_depth[i], mask_i)
 
         if loss is None:
-            loss = torch.mean((dyn_depth_norm - gt_depth_norm) ** 2)
+            loss = img2mse(dyn_depth_norm, gt_depth_norm)
         else:
-            loss += torch.mean((dyn_depth_norm - gt_depth_norm) ** 2)
+            loss += img2mse(dyn_depth_norm, gt_depth_norm)
 
     return loss
