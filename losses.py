@@ -175,7 +175,7 @@ def motion_loss(ret, loss_dict, poses, img_i_list, batch_grid, hwf):
 def smooth_scene_flow(ret, loss_dict, hwf, mask):
     # Smooth scene flow. The summation of the forward and backward sceneflow should be small.
     H, W, focal = tuple(hwf)
-    num_dobj = len(ret["raw_pts"])
+    num_dobj = len(ret["raw_pts"]) - 1
     loss_dict["smooth_loss"] = []
     loss_dict["sf_smooth_loss"] = []
     loss_dict["sp_smooth_loss"] = []

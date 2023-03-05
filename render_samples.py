@@ -17,24 +17,50 @@ def get_rotation(axis, angle):
     angle must be in radians
     """
     # Specify new camera pose for novel scene
-    R = (
-        np.array(
+    if axis == "x":
+        # Rotate along x axis (verified that it is correct)
+        R = np.array(
             [
                 [1, 0, 0],
                 [0, np.cos(angle), np.sin(angle)],
                 [0, -np.sin(angle), np.cos(angle)],
             ]
         )
-        if axis == "x"  # Rotate along x axis (verified that it is correct)
-        else np.array(
+    elif axis == "y":
+        # Rotate camera along y axis (y-axis goes from up to down instead of down to up) (see get_rays() function)
+        R = np.array(
             [
                 [np.cos(angle), 0, -np.sin(angle)],
                 [0, 1, 0],
                 [np.sin(angle), 0, np.cos(angle)],
             ]
         )
-    )  # Rotate camera along y axis (y-axis goes from up to down instead of down to up) (see get_rays() function)
+    elif axis == "z":
+        R = np.array(
+            [
+                [np.cos(angle), -np.sin(angle), 0],
+                [np.sin(angle), np.cos(angle), 0],
+                [0, 0, 1],
+            ]
+        )
     return R
+
+
+def get_pose_time_after_rot(pose2render, time2render, rotation_axis, rotation_degrees):
+    pose2render = [pose2render]
+    for r_axis, r_deg in zip(rotation_axis, rotation_degrees):
+        rotation = torch.from_numpy(get_rotation(r_axis, np.deg2rad(r_deg))).type(
+            pose2render[0].type()
+        )
+        novel_pose2render = pose2render[0].clone()
+        novel_pose2render[:, :3, :3] = novel_pose2render[:, :3, :3] @ rotation.T
+        pose2render.append(novel_pose2render)
+
+    time2render = np.stack([time2render] * (1 + len(rotation_axis)), 1)
+    pose2render = torch.stack(pose2render, 1)
+    assert time2render.shape[0] == pose2render.shape[0]
+    assert time2render.shape[1] == pose2render.shape[1]
+    return pose2render, time2render
 
 
 def save_render(
@@ -74,8 +100,8 @@ def render_fix(
     view_idx=None,
     time_idx=None,
     key="",
-    rotation_axis="x",
-    rotation_degrees=0,
+    rotation_axis=["x"],
+    rotation_degrees=[0],
 ):
     """
     Fix view if view_idx is not None.
@@ -101,13 +127,9 @@ def render_fix(
         time2render = i_train / float(num_img) * 2.0 - 1.0
         pose2render = torch.Tensor(poses)
 
-    rotation = torch.from_numpy(
-        get_rotation(rotation_axis, np.deg2rad(rotation_degrees))
-    ).type(pose2render.type())
-    novel_pose2render = pose2render.clone()
-    novel_pose2render[:, :3, :3] = novel_pose2render[:, :3, :3] @ rotation.T
-    time2render = np.stack([time2render] * 2, 1)
-    pose2render = torch.stack([pose2render, novel_pose2render], 1)
+    pose2render, time2render = get_pose_time_after_rot(
+        pose2render, time2render, rotation_axis, rotation_degrees
+    )
 
     save_render(
         basedir,
@@ -131,8 +153,8 @@ def render_novel_view_and_time(
     render_kwargs_test,
     render_poses,
     key="",
-    rotation_axis="x",
-    rotation_degrees=0,
+    rotation_axis=["x"],
+    rotation_degrees=[0],
 ):
     """
     Change time and view at the same time.
@@ -160,13 +182,9 @@ def render_novel_view_and_time(
         time2render = time2render[: len(render_poses)]
         pose2render = torch.Tensor(render_poses)
 
-    rotation = torch.from_numpy(
-        get_rotation(rotation_axis, np.deg2rad(rotation_degrees))
-    ).type(pose2render.type())
-    novel_pose2render = pose2render.clone()
-    novel_pose2render[:, :3, :3] = novel_pose2render[:, :3, :3] @ rotation.T
-    time2render = np.stack([time2render] * 2, 1)
-    pose2render = torch.stack([pose2render, novel_pose2render], 1)
+    pose2render, time2render = get_pose_time_after_rot(
+        pose2render, time2render, rotation_axis, rotation_degrees
+    )
 
     save_render(
         basedir,
@@ -213,11 +231,14 @@ def main():
     render_kwargs_train, render_kwargs_test, start, grad_vars, optimizer = create_nerf(
         args, num_objects
     )
-    render_kwargs_train.update(bds_dict)
     render_kwargs_test.update(bds_dict)
 
-    axis = "y"
-    angle = 15
+    axis = ["y", "x"]
+    angle = [-30, 15]
+    render_kwargs_test.update({"cam_order": [0, 1, 1]})
+    key = f"testing_cam_"
+    for ax, ang in zip(axis, angle):
+        key += f"{ax}_{ang}_"
 
     fix_values = [
         (None, None),
@@ -235,7 +256,7 @@ def main():
             poses,
             view_idx=fix_value[0],
             time_idx=fix_value[1],
-            key=f"testing_angle_{axis}_{angle}_",
+            key=key,
             rotation_axis=axis,
             rotation_degrees=angle,
         )
@@ -247,7 +268,7 @@ def main():
         hwf,
         render_kwargs_test,
         render_poses,
-        key=f"testing_angle_{axis}_{angle}_",
+        key=key,
         rotation_axis=axis,
         rotation_degrees=angle,
     )

@@ -23,12 +23,13 @@ def get_rgb_weights_after_flow(
     weights_ref,
     raw_noise_std,
     key,
+    cam_order,
 ):
     raw_values = []
-    for dy_idx, dynamic_nerf_model in enumerate(network_fn_d):
+    for idx, dy_idx in enumerate(cam_order[1:]):
         raw_values.append(
             network_query_fn_d(
-                flow_points[dy_idx + 1], viewdirs[dy_idx + 1], dynamic_nerf_model
+                flow_points[idx], viewdirs[idx + 1], network_fn_d[dy_idx - 1]
             )
         )
     raw_values = torch.stack(raw_values, dim=0)
@@ -506,6 +507,7 @@ def render_rays(
     N_importance=0,
     raw_noise_std=0.0,
     inference=False,
+    cam_order=None,
 ):
 
     """Volumetric rendering.
@@ -617,10 +619,12 @@ def render_rays(
 
     # Second pass: we have the DyanmicNeRF results and the blending weight
     raw_d_values = []
-    for dy_idx, dynamic_nerf_model in enumerate(network_fn_d):
+    # for dy_idx, dynamic_nerf_model in enumerate(network_fn_d):
+    cam_order = cam_order or np.arange(len(network_fn_d) + 1, dtype=np.int)
+    for idx, dy_idx in enumerate(cam_order[1:]):
         raw_d_values.append(
             network_query_fn_d(
-                pts_ref[dy_idx + 1], viewdirs[dy_idx + 1], dynamic_nerf_model
+                pts_ref[idx + 1], viewdirs[idx + 1], network_fn_d[dy_idx - 1]
             )
         )
     raw_d_values = torch.stack(raw_d_values, dim=0)
@@ -677,41 +681,28 @@ def render_rays(
     sceneflow_b = raw_d_values[..., 4:7]
     sceneflow_f = raw_d_values[..., 7:10]
 
+    def get_flow_points(flow_preds, add_time):
+        pts_flow = torch.cat(
+            [
+                pts[1:] + flow_preds,
+                torch.ones_like(flow_preds[..., 0:1])
+                * (torch.Tensor(t[1:])[:, None, None, None] + add_time),
+            ],
+            -1,
+        )
+        assert pts_flow.shape == torch.Size([N_obj - 1, N_rays, N_samples, 4])
+        for idx, t_value in enumerate(t[1:]):
+            assert (
+                torch.abs(
+                    pts_flow[..., 3:][idx].unique() - torch.Tensor([t_value + add_time])
+                ).item()
+                < 1e-6
+            ), breakpoint()
+        return pts_flow
+
     t_interval = 1.0 / num_img * 2.0
-    pts_f = torch.cat(
-        [
-            pts + sceneflow_f,
-            torch.ones_like(pts[..., 0:1])
-            * (torch.Tensor(t)[:, None, None, None] + t_interval),
-        ],
-        -1,
-    )
-    assert pts_f.shape == torch.Size([N_obj, N_rays, N_samples, 4])
-    for idx, t_value in enumerate(t):
-        assert (
-            torch.abs(
-                pts_f[..., 3:][idx].unique() - torch.Tensor([t_value + t_interval])
-            ).item()
-            < 1e-6
-        ), breakpoint()
-
-    pts_b = torch.cat(
-        [
-            pts + sceneflow_b,
-            torch.ones_like(pts[..., 0:1])
-            * (torch.Tensor(t)[:, None, None, None] - t_interval),
-        ],
-        -1,
-    )
-    assert pts_b.shape == torch.Size([N_obj, N_rays, N_samples, 4])
-    for idx, t_value in enumerate(t):
-        assert (
-            torch.abs(
-                pts_b[..., 3:][idx].unique() - torch.Tensor([t_value - t_interval])
-            ).item()
-            < 1e-6
-        ), breakpoint()
-
+    pts_f = get_flow_points(sceneflow_f, t_interval)
+    pts_b = get_flow_points(sceneflow_b, -t_interval)
     ret["sceneflow_b"] = sceneflow_b
     ret["sceneflow_f"] = sceneflow_f
     ret["raw_pts_f"] = pts_f[..., :3]
@@ -729,6 +720,7 @@ def render_rays(
         weights_obj[1:],
         raw_noise_std,
         "_b",
+        cam_order,
     )
 
     # Fourth pass: we have the DyanmicNeRF results at time t + 1
@@ -743,48 +735,16 @@ def render_rays(
         weights_obj[1:],
         raw_noise_std,
         "_f",
+        cam_order,
     )
 
     if inference:
         return ret
 
     # Also consider time t - 2 and t + 2 (Learn from NSFF)
-    pts_b_b = torch.cat(
-        [
-            pts_b[..., :3] + ret["sceneflow_b_b"],
-            torch.ones_like(pts[..., 0:1])
-            * (torch.Tensor(t)[:, None, None, None] - t_interval * 2),
-        ],
-        -1,
-    )
-    assert pts_b_b.shape == torch.Size([N_obj, N_rays, N_samples, 4])
-    for idx, t_value in enumerate(t):
-        assert (
-            torch.abs(
-                pts_b_b[..., 3:][idx].unique()
-                - torch.Tensor([t_value - t_interval * 2])
-            ).item()
-            < 1e-6
-        ), breakpoint()
+    pts_b_b = get_flow_points(ret["sceneflow_b_b"], -t_interval * 2)
     ret["raw_pts_b_b"] = pts_b_b[..., :3]
-
-    pts_f_f = torch.cat(
-        [
-            pts_f[..., :3] + ret["sceneflow_f_f"],
-            torch.ones_like(pts[..., 0:1])
-            * (torch.Tensor(t)[:, None, None, None] + t_interval * 2),
-        ],
-        -1,
-    )
-    assert pts_f_f.shape == torch.Size([N_obj, N_rays, N_samples, 4])
-    for idx, t_value in enumerate(t):
-        assert (
-            torch.abs(
-                pts_f_f[..., 3:][idx].unique()
-                - torch.Tensor([t_value + t_interval * 2])
-            ).item()
-            < 1e-6
-        ), breakpoint()
+    pts_f_f = get_flow_points(ret["sceneflow_f_f"], t_interval * 2)
     ret["raw_pts_f_f"] = pts_f_f[..., :3]
 
     if chain_5frames:
@@ -800,6 +760,7 @@ def render_rays(
             weights_obj[1:],
             raw_noise_std,
             "_b_b",
+            cam_order,
         )
 
         # Sixth pass: we have the DyanmicNeRF results at time t + 2
@@ -814,6 +775,7 @@ def render_rays(
             weights_obj[1:],
             raw_noise_std,
             "_f_f",
+            cam_order,
         )
 
     for k in ret:
