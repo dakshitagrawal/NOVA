@@ -30,7 +30,9 @@ def write_static_imgs(writer, i, ret, target, mask, key=""):
     writer.add_image(f"{key}acc", ret["acc_map_full"], global_step=i, dataformats="HW")
 
 
-def write_dynamic_imgs(writer, i, ret, grid, invdepth, pose_f, pose_b, hwf):
+def write_dynamic_imgs(
+    writer, i, ret, target_rgb, grid, invdepth, masks, pose_f, pose_b, hwf
+):
     H, W, focal = tuple(hwf)
     # flow_f_img = flow_to_image(grid[..., 2:4].cpu().numpy())
     # flow_b_img = flow_to_image(grid[..., 5:7].cpu().numpy())
@@ -78,6 +80,10 @@ def write_dynamic_imgs(writer, i, ret, grid, invdepth, pose_f, pose_b, hwf):
             torch.clamp(inv / percentile(inv, 97), 0.0, 1.0),
             global_step=i,
             dataformats="HW",
+        )
+        writer.add_image(f"mask/{idx}", masks[idx], global_step=i, dataformats="HW")
+        writer.add_image(
+            f"rgb_gt/{idx}", target_rgb[idx], global_step=i, dataformats="HWC"
         )
 
     for idx, inv in enumerate(ret["rgb_map_obj"]):

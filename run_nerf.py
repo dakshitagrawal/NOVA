@@ -30,6 +30,7 @@ from run_nerf_helpers import create_nerf, to8b
 from tboard_helpers import write_dynamic_imgs, write_static_imgs
 from train_helpers import (
     decay_lr,
+    img_rot_homo,
     run_nerf_batch,
     save_ckpt,
     select_batch,
@@ -266,7 +267,7 @@ def train():
 
         # No raybatching as we need to take random rays from one image at a time
         img_i = np.ones([num_objects + 1]) * np.random.choice(i_train)
-        ret, select_coords, batch_mask = run_nerf_batch(
+        ret, select_coords, batch_mask, rotations, axes = run_nerf_batch(
             img_i,
             poses,
             masks,
@@ -277,13 +278,46 @@ def train():
             chain_5frames=chain_5frames,
             static=True,
             dynamic=True,
+            novel_view=(i % 3 == 0),
         )
         img_i = img_i.astype(int)
-        target_rgb = select_batch_multiple(images[img_i], select_coords)
-        batch_grid = select_batch_multiple(grids[img_i], select_coords)  # (N_rand, 8)
-        batch_invdepth = select_batch_multiple(invdepths[img_i], select_coords)
-        target_rgb_full = select_batch(images[img_i[0]], select_coords)
-        batch_invdepth_full = select_batch(invdepths[img_i[0]], select_coords)
+
+        # use rotations to warp images, grids, invdepths
+        warped_images = []
+        warped_grids = []
+        warped_invdepths = []
+        warped_masks = []
+
+        for idx, img_idx in enumerate(img_i):
+            tup = (rotations[idx], H, W, focal, axes[idx])
+            warped_images.append(img_rot_homo(images[img_idx], *tup))
+            warped_grids.append(img_rot_homo(grids[img_idx], *tup))
+            warped_invdepths.append(img_rot_homo(invdepths[img_idx], *tup))
+            warped_masks.append(img_rot_homo(masks[img_idx, idx], *tup))
+
+        warped_images = torch.stack(warped_images)
+        warped_grids = torch.stack(warped_grids)
+        warped_invdepths = torch.stack(warped_invdepths)
+        warped_masks = torch.stack(warped_masks)
+        warped_full_mask = warped_masks[0].clone()
+        for cmask in warped_masks[1:]:
+            warped_full_mask[cmask >= 0.5] = 0
+
+        target_rgb = select_batch_multiple(warped_images, select_coords)
+        batch_grid = select_batch_multiple(warped_grids, select_coords)  # (N_rand, 8)
+        batch_invdepth = select_batch_multiple(warped_invdepths, select_coords)
+
+        # create warped full image using masks with dynamic objects at rotated places
+        warped_full_image = (
+            torch.sum(warped_images[1:] * warped_masks[1:, ..., None], dim=0)
+            + warped_images[0] * warped_full_mask[..., None]
+        )
+        warped_full_invdepth = (
+            torch.sum(warped_invdepths[1:] * warped_masks[1:], dim=0)
+            + warped_invdepths[0] * warped_full_mask
+        )
+        target_rgb_full = select_batch(warped_full_image, select_coords)
+        batch_invdepth_full = select_batch(warped_full_invdepth, select_coords)
 
         optimizer.zero_grad()
         loss = 0
@@ -378,7 +412,7 @@ def train():
             path = os.path.join(basedir, expname, "{:06d}.tar".format(i))
             save_ckpt(path, i, render_kwargs_train, optimizer, True)
 
-        if i % args.i_testset == 0 and (args.pretrain or i > 0):
+        if i % args.i_testset == 0 and i > 0:
             fix_values = [(None, None), (args.view_idx, None), (None, args.time_idx)]
             for fix_value in fix_values:
                 render_fix(
@@ -393,7 +427,7 @@ def train():
                     time_idx=fix_value[1],
                 )
 
-        if i % args.i_video == 0 and (args.pretrain or i > 0):
+        if i % args.i_video == 0 and i > 0:
             render_novel_view_and_time(
                 basedir,
                 expname,
@@ -415,11 +449,34 @@ def train():
                 writer.add_scalar(loss_key, loss_dict[loss_key].item(), i)
 
         if i % args.i_img == 0:
-            target = images[img_i]
+            # change poses, masks using rotations
+            warped_images = []
+            warped_grids = []
+            warped_invdepths = []
+            warped_masks = []
             pose = poses[img_i, :3, :4]
-            mask = masks[img_i]
-            grid = grids[img_i]
-            invdepth = invdepths[img_i]
+
+            for idx, img_idx in enumerate(img_i):
+                pose[idx, :3, :3] = pose[idx, :3, :3] @ rotations[idx].T
+                tup = (rotations[idx], H, W, focal, axes[idx])
+                warped_images.append(img_rot_homo(images[img_idx], *tup))
+                warped_grids.append(img_rot_homo(grids[img_idx], *tup))
+                warped_invdepths.append(img_rot_homo(invdepths[img_idx], *tup))
+                warped_masks.append(img_rot_homo(masks[img_idx, idx], *tup))
+
+            warped_images = torch.stack(warped_images)
+            warped_grids = torch.stack(warped_grids)
+            warped_invdepths = torch.stack(warped_invdepths)
+            warped_masks = torch.stack(warped_masks)
+
+            # get collective mask instead of this original static background mask
+            warped_full_mask = warped_masks[0].clone()
+            for cmask in warped_masks[1:]:
+                warped_full_mask[cmask >= 0.5] = 0
+            warped_full_image = (
+                torch.sum(warped_images[1:] * warped_masks[1:, ..., None], dim=0)
+                + warped_images[0] * warped_full_mask[..., None]
+            )
 
             with torch.no_grad():
                 ret = render(
@@ -443,8 +500,19 @@ def train():
 
             pose_f = poses[np.clip(img_i + 1, 0, int(num_img) - 1), :3, :4]
             pose_b = poses[np.clip(img_i - 1, 0, int(num_img) - 1), :3, :4]
-            write_static_imgs(writer, i, ret, target[0], mask[0][0])
-            write_dynamic_imgs(writer, i, ret, grid, invdepth, pose_f, pose_b, hwf)
+            write_static_imgs(writer, i, ret, warped_full_image, warped_full_mask)
+            write_dynamic_imgs(
+                writer,
+                i,
+                ret,
+                warped_images,
+                warped_grids,
+                warped_invdepths,
+                warped_masks,
+                pose_f,
+                pose_b,
+                hwf,
+            )
 
 
 if __name__ == "__main__":

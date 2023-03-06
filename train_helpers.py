@@ -1,7 +1,57 @@
+import cv2
 import numpy as np
 import torch
 
 from render_utils import get_rays, render
+
+
+def get_rotation(axis, angle):
+    """
+    axis can be either "x", "y" or "z"
+    angle must be in radians
+    """
+    if axis == "x":
+        # Rotate along x axis (verified that it is correct)
+        R = np.array(
+            [
+                [1, 0, 0],
+                [0, np.cos(angle), np.sin(angle)],
+                [0, -np.sin(angle), np.cos(angle)],
+            ]
+        )
+    elif axis == "y":
+        # Rotate camera along y axis (y-axis goes from up to down instead of down to up) (see get_rays() function)
+        R = np.array(
+            [
+                [np.cos(angle), 0, -np.sin(angle)],
+                [0, 1, 0],
+                [np.sin(angle), 0, np.cos(angle)],
+            ]
+        )
+    elif axis == "z":
+        R = np.array(
+            [
+                [np.cos(angle), -np.sin(angle), 0],
+                [np.sin(angle), np.cos(angle), 0],
+                [0, 0, 1],
+            ]
+        )
+    return R
+
+
+def img_rot_homo(image, R, H, W, focal, axis="x"):
+    ## need to take care of camera y-axis being opposite to actual coordinate axis
+    K = np.array([[focal, 0, W * 0.5], [0, focal, H * 0.5], [0, 0, 1]])
+    R = R.cpu().numpy()
+    if axis == "x":
+        homography = K @ R @ np.linalg.inv(K)
+    elif axis == "y":
+        homography = K @ R.T @ np.linalg.inv(K)
+
+    novel_view_image = cv2.warpPerspective(
+        image.cpu().numpy(), homography, (image.shape[1], image.shape[0])
+    )
+    return torch.Tensor(novel_view_image)
 
 
 def decay_lr(args, global_step, optimizer):
@@ -45,6 +95,7 @@ def run_nerf_batch(
     chain_5frames,
     static,
     dynamic,
+    novel_view,
 ):
     H, W, focal = tuple(hwf)
     num_img = render_kwargs_train["num_img"]
@@ -54,16 +105,31 @@ def run_nerf_batch(
     cameras_rays_o = []
     cameras_rays_d = []
     cameras_masks = []
+    rotations = []
+    axes = []
 
     for obj_idx, img_idx in enumerate(ids):
         time_ids.append(img_idx / num_img * 2.0 - 1.0)  # time of the current frame
         pose = poses[int(img_idx), :3, :4]
+        # rotate poses according to random rotation (retreive rotation, apply transformation here)
+        rotation = np.eye(3)
+        axis = "x" if np.random.random() > 0.5 else "y"
+        if novel_view and obj_idx > 0:
+            angle = np.deg2rad(np.random.random() * 40 - 20)
+            rotation = get_rotation(axis, angle)
+        rotations.append(torch.from_numpy(rotation).type(pose.type()))
+        axes.append(axis)
+        pose = pose[:3, :3] @ rotations[-1].T
         rays_o, rays_d = get_rays(
             H, W, focal, torch.Tensor(pose)
         )  # (H, W, 3), (H, W, 3)
         cameras_rays_o.append(rays_o)
         cameras_rays_d.append(rays_d)
-        cameras_masks.append(masks[int(img_idx), obj_idx])
+        # rotate masks with same random rotation before appending to camera masks
+        novel_mask = masks[int(img_idx), obj_idx]
+        if obj_idx > 0:
+            novel_mask = img_rot_homo(novel_mask, rotations[-1], H, W, focal, axis)
+        cameras_masks.append(novel_mask)
 
     cameras_rays_o = torch.stack(cameras_rays_o, dim=0)
     cameras_rays_d = torch.stack(cameras_rays_d, dim=0)
@@ -78,6 +144,7 @@ def run_nerf_batch(
     for camera_mask in cameras_masks[1:]:
         coords_d.append(torch.stack((torch.where(camera_mask > 0.5)), -1))
         collective_mask[camera_mask >= 0.5] = 0
+    cameras_masks[0] = collective_mask
     coords_s = torch.stack((torch.where(collective_mask >= 0.5)), -1)
 
     select_coords = []
@@ -127,4 +194,4 @@ def run_nerf_batch(
         rays=batch_rays,
         **render_kwargs_train,
     )
-    return ret, select_coords, batch_mask
+    return ret, select_coords, batch_mask, rotations, axes

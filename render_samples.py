@@ -7,43 +7,9 @@ import torch
 from load_llff import get_data_variables
 from render_utils import render_path, save_res
 from run_nerf_helpers import create_nerf
+from train_helpers import get_rotation
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-
-
-def get_rotation(axis, angle):
-    """
-    axis can be either "x" or "y"
-    angle must be in radians
-    """
-    # Specify new camera pose for novel scene
-    if axis == "x":
-        # Rotate along x axis (verified that it is correct)
-        R = np.array(
-            [
-                [1, 0, 0],
-                [0, np.cos(angle), np.sin(angle)],
-                [0, -np.sin(angle), np.cos(angle)],
-            ]
-        )
-    elif axis == "y":
-        # Rotate camera along y axis (y-axis goes from up to down instead of down to up) (see get_rays() function)
-        R = np.array(
-            [
-                [np.cos(angle), 0, -np.sin(angle)],
-                [0, 1, 0],
-                [np.sin(angle), 0, np.cos(angle)],
-            ]
-        )
-    elif axis == "z":
-        R = np.array(
-            [
-                [np.cos(angle), -np.sin(angle), 0],
-                [np.sin(angle), np.cos(angle), 0],
-                [0, 0, 1],
-            ]
-        )
-    return R
 
 
 def get_pose_time_after_rot(pose2render, time2render, rotation_axis, rotation_degrees):
