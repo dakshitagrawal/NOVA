@@ -143,11 +143,6 @@ def train():
                     ret["rgb_map_full"], target_rgb, {}, "_pretrain"
                 )
                 loss = args.static_loss_lambda * loss_dict["img_pretrain_loss"]
-                # TODO rerun experiment without this loss to determine if needed
-                loss_dict["mask_pretrain_loss"] = img2mae(
-                    ret["dynamicness_map_full"], batch_mask
-                )
-                loss += args.static_loss_lambda * loss_dict["mask_pretrain_loss"]
                 loss.backward()
                 optimizer.step()
                 new_lrate = decay_lr(args, i, optimizer)
@@ -161,9 +156,6 @@ def train():
                     writer.add_scalar("pretrain_loss", loss.item(), i)
                     writer.add_scalar(
                         "pretrain_img_loss", loss_dict["img_pretrain_loss"].item(), i
-                    )
-                    writer.add_scalar(
-                        "pretrain_mask_loss", loss_dict["mask_pretrain_loss"].item(), i
                     )
                     writer.add_scalar(
                         "pretrain_psnr_s", loss_dict["psnr_pretrain"].item(), i
