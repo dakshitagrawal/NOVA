@@ -101,7 +101,7 @@ def train():
     if args.pretrain:
 
         render_kwargs_train.update({"pretrain": True})
-        render_kwargs_test.update({"pretrain": False})
+        render_kwargs_test.update({"pretrain": True})
         print("BEGIN PRETRAINING")
         i_train = np.arange(int(num_img))
         print("TRAIN views are", i_train)
@@ -122,7 +122,7 @@ def train():
                 # No raybatching as we need to take random rays from one image at a time
                 img_i = np.ones([1]) * np.random.choice(i_train)
                 t = img_i / num_img * 2.0 - 1.0  # time of the current frame
-                ret, select_coords, batch_mask = run_nerf_batch(
+                ret, select_coords, batch_mask, rotations, axes = run_nerf_batch(
                     img_i,
                     poses,
                     masks,
@@ -133,6 +133,7 @@ def train():
                     chain_5frames=False,
                     static=True,
                     dynamic=False,
+                    novel_view=False,
                 )
                 img_i = img_i.astype(int)
                 target_rgb = select_batch(images[img_i[0]], select_coords)
@@ -180,7 +181,6 @@ def train():
                             focal,
                             chunk=1024 * 16,
                             c2w=pose,
-                            pretrain=True,
                             **render_kwargs_test,
                         )
                         write_static_imgs(

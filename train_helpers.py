@@ -110,7 +110,7 @@ def run_nerf_batch(
 
     for obj_idx, img_idx in enumerate(ids):
         time_ids.append(img_idx / num_img * 2.0 - 1.0)  # time of the current frame
-        pose = poses[int(img_idx), :3, :4]
+        pose = poses[int(img_idx), :3, :4].clone()
         # rotate poses according to random rotation (retreive rotation, apply transformation here)
         rotation = np.eye(3)
         axis = "x" if np.random.random() > 0.5 else "y"
@@ -119,7 +119,7 @@ def run_nerf_batch(
             rotation = get_rotation(axis, angle)
         rotations.append(torch.from_numpy(rotation).type(pose.type()))
         axes.append(axis)
-        pose = pose[:3, :3] @ rotations[-1].T
+        pose[:3, :3] = pose[:3, :3] @ rotations[-1].T
         rays_o, rays_d = get_rays(
             H, W, focal, torch.Tensor(pose)
         )  # (H, W, 3), (H, W, 3)

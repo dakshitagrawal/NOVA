@@ -193,6 +193,7 @@ def render_path(
       ret_dict: dictionary. Final and intermediate results.
     """
     H, W, focal = hwf
+    pretrain = render_kwargs.get("pretrain")
 
     ret_dict = {}
     rgbs_full = []
@@ -238,9 +239,10 @@ def render_path(
             )
 
         rgbs_full.append(ret["rgb_map_full"].cpu().numpy())
-        rgbs_obj.append(ret["rgb_map_obj"].cpu().numpy())
         depths_full.append(ret["depth_map_full"].cpu().numpy())
-        dynamicness.append(ret["dynamicness_map_obj"].cpu().numpy())
+        if not pretrain:
+            rgbs_obj.append(ret["rgb_map_obj"].cpu().numpy())
+            dynamicness.append(ret["dynamicness_map_obj"].cpu().numpy())
 
         # TODO
         # if flows_gt_f is not None:
@@ -303,13 +305,14 @@ def render_path(
     ret_dict["rgbs_full"] = np.stack(rgbs_full, 0)
     ret_dict["depths_full"] = np.stack(depths_full, 0)
 
-    rgbs_obj = np.stack(rgbs_obj, 0)
-    dynamicness = np.stack(dynamicness, 0)
-    for idx in range(rgbs_obj.shape[1]):
-        ret_dict[f"rgbs_obj_{idx}"] = rgbs_obj[:, idx]
+    if not pretrain:
+        rgbs_obj = np.stack(rgbs_obj, 0)
+        dynamicness = np.stack(dynamicness, 0)
+        for idx in range(rgbs_obj.shape[1]):
+            ret_dict[f"rgbs_obj_{idx}"] = rgbs_obj[:, idx]
 
-    for idx in range(dynamicness.shape[1]):
-        ret_dict[f"dynamicness_{idx}"] = dynamicness[:, idx]
+        for idx in range(dynamicness.shape[1]):
+            ret_dict[f"dynamicness_{idx}"] = dynamicness[:, idx]
 
     # ret_dict["flows_f"] = np.stack(flows_f, 0)
     # ret_dict["flows_b"] = np.stack(flows_b, 0)
