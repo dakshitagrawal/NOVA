@@ -1,4 +1,4 @@
-expname = Umbrella_H270_DyNeRF_pretrain_multiple_obj_rgb_mask
+expname = Umbrella_H270_DyNeRF_pretrain_multiple_obj_novel_view_wopretmask
 basedir = ./logs
 datadir = ./data/Umbrella/
 

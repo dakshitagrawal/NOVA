@@ -92,7 +92,6 @@ def train():
     # Move training data to GPU
     images = torch.Tensor(images)
     invdepths = torch.Tensor(invdepths)
-    masks[:, 0] = 1.0 - masks[:, 0]
     masks = torch.Tensor(masks)
     poses = torch.Tensor(poses)
     grids = torch.Tensor(grids)
@@ -417,6 +416,8 @@ def train():
                     poses,
                     view_idx=fix_value[0],
                     time_idx=fix_value[1],
+                    rotation_axis=["x"] * num_objects,
+                    rotation_degrees=[0] * num_objects,
                 )
 
         if i % args.i_video == 0 and i > 0:
@@ -428,6 +429,8 @@ def train():
                 hwf,
                 render_kwargs_test,
                 render_poses,
+                rotation_axis=["x"] * num_objects,
+                rotation_degrees=[0] * num_objects,
             )
 
         if i % args.i_print == 0:

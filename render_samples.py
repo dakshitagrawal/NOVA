@@ -199,9 +199,11 @@ def main():
     )
     render_kwargs_test.update(bds_dict)
 
-    axis = ["y", "x"]
-    angle = [-30, 15]
-    render_kwargs_test.update({"cam_order": [0, 1, 1]})
+    axis = ["x"] * num_objects
+    angle = [0] * num_objects
+    # axis = ["y", "x"]
+    # angle = [-15, 10]
+    # render_kwargs_test.update({"cam_order": [0, 1, 1]})
     key = f"testing_cam_"
     for ax, ang in zip(axis, angle):
         key += f"{ax}_{ang}_"
