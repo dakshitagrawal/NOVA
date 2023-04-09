@@ -320,7 +320,7 @@ def render_path(
     return ret_dict
 
 
-def raw2outputs(rgba, blending, z_vals, rays_d, raw_noise_std):
+def raw2outputs(rgba, blending, z_vals, rays_d, raw_noise_std, hard_blending=False):
     """Transforms model's predictions to semantically meaningful values.
 
     Args:
@@ -339,6 +339,11 @@ def raw2outputs(rgba, blending, z_vals, rays_d, raw_noise_std):
     # Function for computing density from model prediction. This value is
     # strictly between [0, 1].
     N_obj, N_rays, N_samples, _ = rgba.shape
+    if hard_blending:
+        for bl_obj in range(1, N_obj):
+            blending[0] = torch.where(
+                blending[bl_obj] > 0.5, torch.zeros_like(blending[0]), blending[0]
+            )
     blending = blending / (blending.sum(dim=0, keepdim=True) + 1e-8)
 
     def raw2alpha(raw, dists, act_fn=F.relu):
@@ -511,6 +516,7 @@ def render_rays(
     raw_noise_std=0.0,
     inference=False,
     cam_order=None,
+    hard_blending=False,
 ):
 
     """Volumetric rendering.
@@ -663,7 +669,7 @@ def render_rays(
         weights_obj,
         dynamicness_map_obj,
         alpha_obj,
-    ) = raw2outputs(raw_rgba, blending, z_vals, rays_d, raw_noise_std)
+    ) = raw2outputs(raw_rgba, blending, z_vals, rays_d, raw_noise_std, hard_blending)
 
     ret = {
         "rgb_map_full": rgb_map_full,
