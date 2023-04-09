@@ -1,4 +1,4 @@
-expname = Playground_H270_DyNeRF_pretrain_multiple_obj_novel_view
+expname = Playground_H270_DyNeRF_pretrain_mobj_nova
 basedir = ./logs
 datadir = ./data/Playground/
 

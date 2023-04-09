@@ -1,4 +1,4 @@
-expname = Truck_H270_DyNeRF_pretrain
+expname = Truck_H270_DyNeRF_pretrain_mobj_nova
 basedir = ./logs
 datadir = ./data/Truck/
 
@@ -12,6 +12,7 @@ netwidth = 256
 
 i_video = 100000
 i_testset = 100000
+pretrain_N_iters = 100001
 N_iters = 300001
 i_img = 500
 
@@ -32,5 +33,5 @@ smooth_loss_lambda = 0.1
 consistency_loss_lambda = 1.0
 mask_loss_lambda = 0.1
 sparse_loss_lambda = 0.001
-DyNeRF_blending = True
 pretrain = True
+fix_static_nerf_after_pretraining = False

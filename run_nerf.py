@@ -257,6 +257,7 @@ def train():
             torch.cuda.empty_cache()
 
         # No raybatching as we need to take random rays from one image at a time
+        use_novel_view = (i % 3 == 0) and i > 100000
         img_i = np.ones([num_objects + 1]) * np.random.choice(i_train)
         ret, select_coords, batch_mask, rotations, axes = run_nerf_batch(
             img_i,
@@ -269,7 +270,7 @@ def train():
             chain_5frames=chain_5frames,
             static=True,
             dynamic=True,
-            novel_view=(i % 3 == 0),
+            novel_view=use_novel_view,
         )
         img_i = img_i.astype(int)
 
