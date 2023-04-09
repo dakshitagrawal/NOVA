@@ -16,7 +16,9 @@ def create_dir(dir):
 
 
 def readimage(data_dir, sequence, time, method):
-    img = cv2.imread(os.path.join(data_dir, method, sequence, 'v000_t' + str(time).zfill(3) + '.png'))
+    img = cv2.imread(
+        os.path.join(data_dir, method, sequence, "v000_t" + str(time).zfill(3) + ".png")
+    )
     return img
 
 
@@ -30,22 +32,22 @@ def calculate_metrics(data_dir, sequence, methods, lpips_loss):
 
     # Yoon's results do not include v000_t000 and v000_t011. Omit these two
     # frames if evaluating Yoon's method.
-    if 'Yoon' in methods:
+    if "Yoon" in methods:
         time_start = 1
         time_end = 11
     else:
         time_start = 0
         time_end = 12
 
-    for time in range(time_start, time_end): # Fix view v0, change time
+    for time in range(time_start, time_end):  # Fix view v0, change time
 
         nFrame += 1
 
-        img_true = readimage(data_dir, sequence, time, 'gt')
+        img_true = readimage(data_dir, sequence, time, "gt")
 
         for method_idx, method in enumerate(methods):
 
-            if 'Yoon' in methods and sequence == 'Truck' and time == 10:
+            if "Yoon" in methods and sequence == "Truck" and time == 10:
                 break
 
             img = readimage(data_dir, sequence, time, method)
@@ -64,22 +66,37 @@ def calculate_metrics(data_dir, sequence, methods, lpips_loss):
     return PSNRs, SSIMs, LPIPSs
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
 
-    lpips_loss = lpips.LPIPS(net='alex') # best forward scores
-    data_dir = '../results'
-    sequences = ['Balloon1', 'Balloon2', 'Jumping', 'Playground', 'Skating', 'Truck', 'Umbrella']
+    lpips_loss = lpips.LPIPS(net="alex")  # best forward scores
+    data_dir = "../evaluate/results"
+    sequences = [
+        "Balloon1",
+        "Balloon2",
+        "Jumping",
+        "Playground",
+        "Skating",
+        "Truck",
+        "Umbrella",
+    ]
     # methods = ['NeRF', 'NeRF_t', 'Yoon', 'NR', 'NSFF', 'Ours']
-    methods = ['NeRF', 'NeRF_t', 'NR', 'NSFF', 'Ours']
+    methods = ["NeRF_t", "Yoon", "NSFF", "DyNeRF", "Ours"]
 
     PSNRs_total = np.zeros((len(methods)))
     SSIMs_total = np.zeros((len(methods)))
     LPIPSs_total = np.zeros((len(methods)))
     for sequence in sequences:
         print(sequence)
-        PSNRs, SSIMs, LPIPSs = calculate_metrics(data_dir, sequence, methods, lpips_loss)
+        PSNRs, SSIMs, LPIPSs = calculate_metrics(
+            data_dir, sequence, methods, lpips_loss
+        )
         for method_idx, method in enumerate(methods):
-            print(method.ljust(7) + '%.2f'%(PSNRs[method_idx]) + ' / %.4f'%(SSIMs[method_idx]) + ' / %.3f'%(LPIPSs[method_idx]))
+            print(
+                method.ljust(7)
+                + "%.2f" % (PSNRs[method_idx])
+                + " / %.4f" % (SSIMs[method_idx])
+                + " / %.3f" % (LPIPSs[method_idx])
+            )
 
         PSNRs_total += PSNRs
         SSIMs_total += SSIMs
@@ -88,6 +105,11 @@ if __name__ == '__main__':
     PSNRs_total = PSNRs_total / len(sequences)
     SSIMs_total = SSIMs_total / len(sequences)
     LPIPSs_total = LPIPSs_total / len(sequences)
-    print('Avg.')
+    print("Avg.")
     for method_idx, method in enumerate(methods):
-        print(method.ljust(7) + '%.2f'%(PSNRs_total[method_idx]) + ' / %.4f'%(SSIMs_total[method_idx]) + ' / %.3f'%(LPIPSs_total[method_idx]))
+        print(
+            method.ljust(7)
+            + "%.2f" % (PSNRs_total[method_idx])
+            + " / %.4f" % (SSIMs_total[method_idx])
+            + " / %.3f" % (LPIPSs_total[method_idx])
+        )
