@@ -25,7 +25,7 @@ This repository contains the code of the short paper NOVA accepted to the [CV4Me
 4. [Render Samples](#4-render-samples)
 5. [Evaluation](#5-evaluation)
 6. [License](#6-license)
-7. [Acknowledgements](#7-acknowledgement)
+7. [Acknowledgements](#7-acknowledgements)
 
 
 ## 1. Setup Instructions and Dependencies
@@ -47,7 +47,7 @@ conda install pytorch torchvision torchaudio pytorch-cuda=11.7 -c pytorch -c nvi
 pip install -r requirements.txt
 ```
 
-## 2. Dynamic Scene Dataset
+## 2. Dataset
 
 The [Dynamic Scene Dataset](https://research.nvidia.com/publication/2020-06_novel-view-synthesis-dynamic-scenes-globally-coherent-depths) is used for our experiments. Please download the pre-processed data by running:
 
@@ -132,5 +132,5 @@ python utils/evaluation.py
 
 This work is licensed under MIT License. See [LICENSE](LICENSE) for details.
 
-## 7. Acknowledgments
+## 7. Acknowledgements
 Our training code is build upon [DynamicNeRF](https://github.com/gaochen315/DynamicNeRF).
