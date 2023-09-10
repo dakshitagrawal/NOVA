@@ -3,6 +3,7 @@ import os
 import cv2
 import imageio
 import numpy as np
+from PIL import Image
 
 from run_nerf_helpers import get_grid
 from utils.flow_utils import resize_flow
@@ -129,10 +130,7 @@ def _load_data(basedir, factor=None, width=None, height=None, load_imgs=True):
         return poses, bds
 
     def imread(f):
-        if f.endswith("png"):
-            return imageio.imread(f, ignoregamma=True)
-        else:
-            return imageio.imread(f)
+        return np.array(Image.open(f))
 
     imgs = [imread(f)[..., :3] / 255.0 for f in imgfiles]
     imgs = np.stack(imgs, -1)
@@ -325,7 +323,7 @@ def spherify_poses(poses, bds):
 
     centroid = np.mean(poses_reset[:, :3, 3], 0)
     zh = centroid[2]
-    radcircle = np.sqrt(rad**2 - zh**2)
+    radcircle = np.sqrt(rad ** 2 - zh ** 2)
     new_poses = []
 
     for th in np.linspace(0.0, 2.0 * np.pi, 120):

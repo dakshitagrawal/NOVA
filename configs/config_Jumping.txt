@@ -1,4 +1,4 @@
-expname = Jumping_H270_DyNeRF_pretrain_mobj_nova
+expname = Jumping_H270_NOVA
 basedir = ./logs
 datadir = ./data/Jumping/
 

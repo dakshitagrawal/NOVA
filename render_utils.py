@@ -629,7 +629,7 @@ def render_rays(
     # Second pass: we have the DyanmicNeRF results and the blending weight
     raw_d_values = []
     # for dy_idx, dynamic_nerf_model in enumerate(network_fn_d):
-    cam_order = cam_order or np.arange(len(network_fn_d) + 1, dtype=np.int)
+    cam_order = cam_order or np.arange(len(network_fn_d) + 1, dtype=int)
     for idx, dy_idx in enumerate(cam_order[1:]):
         raw_d_values.append(
             network_query_fn_d(

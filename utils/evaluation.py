@@ -52,7 +52,9 @@ def calculate_metrics(data_dir, sequence, methods, lpips_loss):
 
             img = readimage(data_dir, sequence, time, method)
             PSNR = cv2.PSNR(img_true, img)
-            SSIM = structural_similarity(img_true, img, multichannel=True)
+            SSIM = structural_similarity(
+                img_true, img, multichannel=True, channel_axis=2
+            )
             LPIPS = lpips_loss.forward(im2tensor(img_true), im2tensor(img)).item()
 
             PSNRs[method_idx] += PSNR
@@ -69,7 +71,7 @@ def calculate_metrics(data_dir, sequence, methods, lpips_loss):
 if __name__ == "__main__":
 
     lpips_loss = lpips.LPIPS(net="alex")  # best forward scores
-    data_dir = "../evaluate/results"
+    data_dir = "results"
     sequences = [
         "Balloon1",
         "Balloon2",
@@ -79,8 +81,7 @@ if __name__ == "__main__":
         "Truck",
         "Umbrella",
     ]
-    # methods = ['NeRF', 'NeRF_t', 'Yoon', 'NR', 'NSFF', 'Ours']
-    methods = ["NeRF_t", "Yoon", "NSFF", "DyNeRF", "Ours"]
+    methods = ["NeRF_t", "Yoon", "NSFF", "DynamicNeRF", "Ours"]
 
     PSNRs_total = np.zeros((len(methods)))
     SSIMs_total = np.zeros((len(methods)))

@@ -1,4 +1,4 @@
-expname = xxxxxx_DyNeRF_pretrain_test
+expname = xxxxxx_NOVA
 basedir = ./logs
 datadir = ./data/xxxxxx/
 

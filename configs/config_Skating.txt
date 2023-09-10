@@ -1,4 +1,4 @@
-expname = Skating_H270_DyNeRF_pretrain_mobj_nova
+expname = Skating_H270_NOVA
 basedir = ./logs
 datadir = ./data/Skating/
 
