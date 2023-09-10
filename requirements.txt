@@ -1,0 +1,7 @@
+configargparse
+gdown
+imageio[ffmpeg]
+lpips
+opencv-python
+scikit-image
+tensorboardX
