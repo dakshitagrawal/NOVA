@@ -201,9 +201,9 @@ def main():
 
     axis = ["x"] * num_objects
     angle = [0] * num_objects
-    # axis = ["y", "x"]
-    # angle = [-15, 10]
-    # render_kwargs_test.update({"cam_order": [0, 1, 1]})
+    # axis = ["x", "x", "y"]
+    # angle = [0, -10, 15]
+    # render_kwargs_test.update({"cam_order": [0, 1, 2, 2]})
 
     render_kwargs_test.update({"hard_blending": True})
     key = "testing_cam_"
