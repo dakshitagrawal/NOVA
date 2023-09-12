@@ -110,13 +110,13 @@ We quantitatively evaluate the fix-view-change-time results of the following met
 `Yoon et al.` \
 `NSFF` \
 `DynamicNeRF` \
-**[TODO]** `NOVA (ours)`
+`NOVA (ours)`
 
 Please download the results by running:
 
 ```bash
 cd $ROOT_PATH/
-gdown https://drive.google.com/uc\?id\=1vMh2GUxXiHF_gHo_gIdVMABRL8UXrmI7
+gdown https://drive.google.com/uc\?id\=1cZ4L1OyH9K3OutlXA3llEqwAuXuDb_JC
 unzip results.zip
 rm results.zip
 ```
