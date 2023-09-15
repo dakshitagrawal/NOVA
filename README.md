@@ -93,11 +93,11 @@ angle = [0, -10, 15]
 render_kwargs_test.update({"cam_order": [0, 1, 2, 2]})
 ```
 
-**[TODO]** We provide our trained models. You can download them by running:
+We provide our trained models. You can download them by running:
 
 ```bash
 cd $ROOT_PATH/
-gdown https://drive.google.com/uc\?id\=
+gdown https://drive.google.com/uc\?id\=1ZlF1uG4KG_7-ifY7qtClnELtz0DZ5KTn
 unzip logs.zip
 rm logs.zip
 ```
@@ -116,7 +116,7 @@ Please download the results by running:
 
 ```bash
 cd $ROOT_PATH/
-gdown https://drive.google.com/uc\?id\=1cZ4L1OyH9K3OutlXA3llEqwAuXuDb_JC
+gdown https://drive.google.com/uc\?id\=1y0RvV4jzkqcEdOOUHR_7hAGbLWPPIki3
 unzip results.zip
 rm results.zip
 ```
@@ -126,6 +126,27 @@ Then you can calculate the PSNR/SSIM/LPIPS by running:
 ```bash
 cd $ROOT_PATH
 python utils/evaluation.py
+```
+
+The NOVA (our) results above differ slightly from the results shown in the paper because the models have been retrained. The PSNR metrics of the provided trained models are as follows:
+
+1. Balloon1 -- 21.51
+2. Balloon2 -- 23.74
+3. Jumping -- 19.88
+4. Playground -- 22.70
+5. Skating -- 26.38
+6. Truck -- 23.34
+7. Umbrella -- 23.10
+
+Average -- 22.95
+
+To download the results folder that corresponds to the PSNR metrics quoted in the paper, please download the following:
+
+```bash
+cd $ROOT_PATH/
+gdown https://drive.google.com/uc\?id\=1M4yJ66n-VqJoR0r-7PSklGjlcSUI1xCN
+unzip results_paper.zip
+rm results_paper.zip
 ```
 
 ## 6. License
