@@ -2,18 +2,18 @@
 
  [![arXiv](https://img.shields.io/badge/arXiv-2108.00946-b31b1b.svg)](https://arxiv.org/abs/2308.12560)
 
-[Project Website](https://mscvprojects.ri.cmu.edu/2023team1/) | [Paper](https://arxiv.org/pdf/2308.12560.pdf)
+[Project Website](https://mscvprojects.ri.cmu.edu/2023team1/) | [Paper](https://openaccess.thecvf.com/content/ICCV2023W/CV4Metaverse/papers/Agrawal_NOVA_NOvel_View_Augmentation_for_Neural_Composition_of_Dynamic_Objects_ICCVW_2023_paper.pdf) | [arXiv](https://arxiv.org/pdf/2308.12560.pdf)
 
 This repository contains the code of the short paper NOVA accepted to the [CV4Metaverse ICCV 2023 Workshop](https://sites.google.com/view/cv4metaverse/). If you find this paper and code useful for your research, please consider citing the following paper:
 
 ```
-@misc{agrawal2023nova,
-      title={NOVA: NOvel View Augmentation for Neural Composition of Dynamic Objects},
-      author={Dakshit Agrawal and Jiajie Xu and Siva Karthik Mustikovela and Ioannis Gkioulekas and Ashish Shrivastava and Yuning Chai},
-      year={2023},
-      eprint={2308.12560},
-      archivePrefix={arXiv},
-      primaryClass={cs.CV}
+@InProceedings{Agrawal_2023_ICCV,
+    author    = {Agrawal, Dakshit and Xu, Jiajie and Mustikovela, Siva Karthik and Gkioulekas, Ioannis and Shrivastava, Ashish and Chai, Yuning},
+    title     = {NOVA: NOvel View Augmentation for Neural Composition of Dynamic Objects},
+    booktitle = {Proceedings of the IEEE/CVF International Conference on Computer Vision (ICCV) Workshops},
+    month     = {October},
+    year      = {2023},
+    pages     = {4288-4292}
 }
 ```
 
